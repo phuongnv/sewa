@@ -6,29 +6,10 @@ services:
     volumes:
       - ..:/workspace:cached
     working_dir: /workspace
-    depends_on:
-      - db
-    environment:
-      POSTGRES_HOST: db
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: appdb
-      POSTGRES_USER: appuser
-      POSTGRES_PASSWORD: apppassword
     ports:
       - "8501:8501"  # streamlit
     command: sleep infinity
 
-  db:
-    image: postgres:16-alpine
-    container_name: streamlit-db
-    environment:
-      POSTGRES_DB: appdb
-      POSTGRES_USER: appuser
-      POSTGRES_PASSWORD: apppassword
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
 
 volumes:
   pgdata:
