@@ -1,0 +1,25 @@
+{
+  "name": "Streamlit + PostgreSQL Dev",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "features": {},
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.black-formatter"
+      ]
+    }
+  },
+  "postCreateCommand": "python -m venv .venv && . .venv/bin/activate && pip install -U pip && pip install -r requirements.txt",
+  "remoteEnv": {
+    "POSTGRES_HOST": "ep-misty-cell-a1hukoyn-pooler.ap-southeast-1.aws.neon.tech",
+    "POSTGRES_PORT": "5432",
+    "POSTGRES_DB": "neondb",
+    "POSTGRES_USER": "neondb_owner",
+    "POSTGRES_PASSWORD": "npg_TO9UqmfSvIF1"
+  }
+}
+
