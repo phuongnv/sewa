@@ -1,128 +1,219 @@
 import os
-import time
 import psycopg2
 import requests
-import schedule
 from datetime import datetime
-from psycopg2.extras import execute_values
 from dotenv import load_dotenv
+from psycopg2.extras import execute_values
+import schedule
+import time
 
 load_dotenv()
-
-# ---------------- CONFIG ----------------
 DB_URL = os.getenv("DATABASE_URL")
-HEADERS = {
-    "accept": "application/json, text/plain, */*",
-    "accept-language": "vi",
-    "device-id": "ADF1E947-BFD7-47BA-AA97-27531F3CC595",
-    "origin": "https://iboard.ssi.com.vn",
-    "referer": "https://iboard.ssi.com.vn/",
-    "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"macOS"',
-    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
-}
-INDEXES = ["VNINDEX", "HNXIndex"]
 
-# ---------------- DB ----------------
 def get_db_connection():
     return psycopg2.connect(DB_URL)
 
-def save_rrg_data(conn, records):
-    if not records:
-        print("⚠️  No records to save.")
-        return
-    with conn.cursor() as cur:
-        execute_values(cur, """
-            INSERT INTO rrg_index_data (symbol, date, value)
-            VALUES %s
-            ON CONFLICT (symbol, date) DO UPDATE
-            SET value = EXCLUDED.value
-        """, records)
-    conn.commit()
-    print(f"✅ Saved {len(records)} records.")
+# ===============================
+# Fetch market index (VNINDEX, HNXIndex)
+# ===============================
+def fetch_index_data(symbol, has_history=True):
+    # url = f"https://iboard-query.ssi.com.vn/exchange-index/{symbol}"
+    # if has_history:
+    #     url += "?hasHistory=true"
 
+    HEADERS = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "vi",
+        "device-id": "ADF1E947-BFD7-47BA-AA97-27531F3CC595",
+        "origin": "https://iboard.ssi.com.vn",
+        "referer": "https://iboard.ssi.com.vn/",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    }
 
-# ---------------- FETCH FUNCTIONS ----------------
-def fetch_index_data(symbol):
-    """Fetch full history data"""
-    url = f"https://iboard-query.ssi.com.vn/exchange-index/{symbol}?hasHistory=true"
-    resp = requests.get(url, headers=HEADERS, timeout=15)
-    resp.raise_for_status()
-    data = resp.json().get("data", {})
-    if not data or "history" not in data:
-        print(f"⚠️ No history for {symbol}")
+    base_url = f"https://iboard-query.ssi.com.vn/exchange-index/{symbol}"
+    if has_history:
+        base_url += "?hasHistory=true"
+
+    print(f"🔹 Fetching {symbol} data (history={has_history}) ...")
+
+    try:
+        resp = requests.get(base_url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        data = resp.json().get("data", {})
+    except Exception as e:
+        print(f"❌ Error fetching {symbol}: {e}")
         return []
+
     records = []
-    for h in data["history"]:
-        t = datetime.fromtimestamp(h["time"] / 1000.0)
-        v = h.get("indexValue")
-        if v:
-            records.append((symbol, t, v))
-    print(f"✅ Fetched {len(records)} history records for {symbol}")
+
+    # Nếu có history
+    if has_history and "history" in data:
+        for item in data["history"]:
+            timestamp = item.get("time")
+            if not timestamp:
+                continue
+            date = datetime.datetime.fromtimestamp(timestamp / 1000)
+            price = item.get("indexValue")
+            volume = item.get("totalQtty", 0)
+            price_change = None
+            price_change_percent = None
+            records.append((symbol, date, price, price_change, price_change_percent, volume))
+    else:
+        # Chỉ lấy latest snapshot
+        timestamp = data.get("time")
+        if timestamp:
+            date = datetime.fromtimestamp(timestamp / 1000)
+            price = data.get("indexValue")
+            price_change = data.get("change")
+            price_change_percent = data.get("changePercent")
+            volume = data.get("totalQtty", 0)
+            records.append((symbol, date, price, price_change, price_change_percent, volume))
+
+    print(f"✅ Fetched {len(records)} records for {symbol}")
     return records
 
+# ===============================
+# Fetch stock prices for HOSE and HNX
+# ===============================
+def fetch_stock_data(exchange):
+    url = f"https://iboard-query.ssi.com.vn/stock/exchange/{exchange}?boardId=MAIN"
 
-def fetch_daily_index(symbol):
-    """Fetch latest single snapshot"""
-    url = f"https://iboard-query.ssi.com.vn/exchange-index/{symbol}"
-    resp = requests.get(url, headers=HEADERS, timeout=15)
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "vi",
+        "device-id": "ADF1E947-BFD7-47BA-AA97-27531F3CC595",
+        "origin": "https://iboard.ssi.com.vn",
+        "referer": "https://iboard.ssi.com.vn/",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    }
+
+    resp = requests.get(url, headers=headers, timeout=20)
     resp.raise_for_status()
-    data = resp.json().get("data", {})
-    if not data or "indexValue" not in data:
-        print(f"⚠️ No latest data for {symbol}")
-        return []
-    t = datetime.fromtimestamp(data["time"] / 1000.0)
-    v = data["indexValue"]
-    print(f"✅ Latest {symbol} = {v} at {t}")
-    return [(symbol, t, v)]
+    data = resp.json().get("data", [])
+
+    records = []
+    for item in data:
+        symbol = item.get("stockSymbol")
+        trading_date = item.get("tradingDate")
+        date = datetime.strptime(trading_date, "%Y%m%d")
+        close_price = item.get("matchedPrice")
+        open_price = item.get("openPrice")
+        high = item.get("highest")
+        low = item.get("lowest")
+        volume = item.get("nmTotalTradedQty")
+        records.append((symbol, date, open_price, high, low, close_price, volume, exchange.upper()))
+
+    print(f"✅ Fetched {len(records)} stocks from {exchange.upper()}")
+    return records
+
+# ===============================
+# Save to DB
+# ===============================
+def save_rrg_data(conn, records, table="rrg_index_data"):
+    """
+    Lưu danh sách records vào bảng rrg_index_data.
+    Mỗi record có dạng:
+        (symbol, date, price, price_change, price_change_percent, volume)
+    """
+
+    if not records:
+        print("⚠️ No records to save.")
+        return
+
+    with conn.cursor() as cur:
+        # Loại bỏ trùng (symbol, date)
+        unique_records = {(r[0], r[1]): r for r in records}
+        records = list(unique_records.values())
+
+        # Chèn hoặc cập nhật dữ liệu
+        insert_query = f"""
+            INSERT INTO {table} 
+                (symbol, date, price, price_change, price_change_percent, volume)
+            VALUES %s
+            ON CONFLICT (symbol, date)
+            DO UPDATE SET
+                price = EXCLUDED.price,
+                price_change = EXCLUDED.price_change,
+                price_change_percent = EXCLUDED.price_change_percent,
+                volume = EXCLUDED.volume,
+                updated_at = CURRENT_TIMESTAMP;
+        """
+
+        execute_values(cur, insert_query, records)
+        conn.commit()
+
+    print(f"✅ Saved {len(records)} records into {table}")
 
 
-# ---------------- MAIN LOGIC ----------------
+def save_stock_data(conn, records, table="stock_prices"):
+    if not records:
+        print("⚠️ No stock records to save.")
+        return
+    with conn.cursor() as cur:
+        unique_records = {(r[0], r[1]): r for r in records}
+        records = list(unique_records.values())
+
+        execute_values(cur, f"""
+            INSERT INTO {table} (symbol, date, open, high, low, close, volume, exchange)
+            VALUES %s
+            ON CONFLICT (symbol, date)
+            DO UPDATE SET close = EXCLUDED.close,
+                          open = EXCLUDED.open,
+                          high = EXCLUDED.high,
+                          low = EXCLUDED.low,
+                          volume = EXCLUDED.volume,
+                          exchange = EXCLUDED.exchange
+        """, records)
+        conn.commit()
+    print(f"✅ Saved {len(records)} stock records into {table}")
+
+# ===============================
+# Update modes
+# ===============================
 def update_history():
     conn = get_db_connection()
-    for s in INDEXES:
-        print(f"🔹 Fetching {s} historical data ...")
-        data = fetch_index_data(s)
-        save_rrg_data(conn, data)
+    indexes = ["VNINDEX", "HNXIndex"]
+    for idx in indexes:
+        records = fetch_index_data(idx, has_history=True)
+        save_rrg_data(conn, records)
+    for exch in ["hose", "hnx"]:
+        stock_records = fetch_stock_data(exch)
+        save_stock_data(conn, stock_records)
     conn.close()
 
 def update_latest():
     conn = get_db_connection()
-    for s in INDEXES:
-        print(f"🔹 Fetching {s} latest data ...")
-        data = fetch_daily_index(s)
-        save_rrg_data(conn, data)
+    indexes = ["VNINDEX", "HNXIndex"]
+    for idx in indexes:
+        records = fetch_index_data(idx, has_history=False)
+        
+
+        save_rrg_data(conn, records)
+    for exch in ["hose", "hnx"]:
+        stock_records = fetch_stock_data(exch)
+        print("Sample record:", stock_records[0])
+        print("Record length:", len(stock_records[0]))
+        save_stock_data(conn, stock_records)
     conn.close()
 
-def update_both():
-    update_history()
-    update_latest()
-
-
-# ---------------- SCHEDULER ----------------
-def schedule_daily_update():
-    """Auto run every day at 17:00 VN time"""
-    schedule.every().day.at("17:00").do(update_latest)
-    print("⏰ Scheduler started. Running every day at 17:00 VN time.")
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
-
-# ---------------- CLI ENTRY ----------------
+# ===============================
+# Main
+# ===============================
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Update SSI index data to Neon DB")
-    parser.add_argument("--mode", choices=["history", "latest", "both", "auto"], default="latest",
-                        help="Choose mode: 'history' for all data, 'latest' for today, 'both' for both, 'auto' for daily scheduler")
+    parser = argparse.ArgumentParser(description="Update SSI market & stock data")
+    parser.add_argument("--mode", choices=["history", "latest", "auto"], default="latest")
     args = parser.parse_args()
 
     if args.mode == "history":
+        print("🔹 Updating historical data ...")
         update_history()
     elif args.mode == "latest":
+        print("🔹 Updating latest data ...")
         update_latest()
-    elif args.mode == "both":
-        update_both()
     elif args.mode == "auto":
-        schedule_daily_update()
+        print("🕒 Auto mode started (daily 17:00 VN time)")
+        schedule.every().day.at("17:00").do(update_latest)
+        while True:
+            schedule.run_pending()
+            time.sleep(60)
