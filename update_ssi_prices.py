@@ -1,7 +1,7 @@
 import os
 import psycopg2
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 import schedule
@@ -9,6 +9,15 @@ import time
 
 load_dotenv()
 DB_URL = os.getenv("DATABASE_URL")
+
+headers = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "vi",
+        "device-id": "ADF1E947-BFD7-47BA-AA97-27531F3CC595",
+        "origin": "https://iboard.ssi.com.vn",
+        "referer": "https://iboard.ssi.com.vn/",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    }
 
 def get_db_connection():
     return psycopg2.connect(DB_URL)
@@ -52,7 +61,7 @@ def fetch_index_data(symbol, has_history=True):
             timestamp = item.get("time")
             if not timestamp:
                 continue
-            date = datetime.datetime.fromtimestamp(timestamp / 1000)
+            date = datetime.fromtimestamp(timestamp / 1000)
             price = item.get("indexValue")
             volume = item.get("totalQtty", 0)
             price_change = None
@@ -78,14 +87,7 @@ def fetch_index_data(symbol, has_history=True):
 def fetch_stock_data(exchange):
     url = f"https://iboard-query.ssi.com.vn/stock/exchange/{exchange}?boardId=MAIN"
 
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "accept-language": "vi",
-        "device-id": "ADF1E947-BFD7-47BA-AA97-27531F3CC595",
-        "origin": "https://iboard.ssi.com.vn",
-        "referer": "https://iboard.ssi.com.vn/",
-        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
-    }
+    
 
     resp = requests.get(url, headers=headers, timeout=20)
     resp.raise_for_status()
@@ -105,6 +107,93 @@ def fetch_stock_data(exchange):
 
     print(f"✅ Fetched {len(records)} stocks from {exchange.upper()}")
     return records
+
+
+def fetch_stock_list(exchange: str):
+    """Lấy danh sách mã cổ phiếu từ sàn HOSE hoặc HNX"""
+    url = f"https://iboard.ssi.com.vn/dchart/api/stock/exchange/{exchange}"
+    resp = requests.get(url, headers=headers, timeout=10)
+    data = resp.json()
+    if not data:
+        print(f"❌ Không lấy được danh sách sàn {exchange}")
+        return []
+    symbols = [item["symbol"] for item in data if "symbol" in item]
+    print(f"✅ Fetched {len(symbols)} stocks from {exchange}")
+    return symbols
+
+def fetch_stock_history(symbol: str, days: int = 100):
+    """Lấy lịch sử giá 100 ngày gần nhất cho 1 mã cổ phiếu"""
+    end_ts = int(datetime.now().timestamp())
+    start_ts = int((datetime.now() - timedelta(days=days)).timestamp())
+
+    url = f"https://iboard-api.ssi.com.vn/statistics/charts/history?resolution=1D&symbol={symbol}&from={start_ts}&to={end_ts}"
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        data = resp.json()
+    except Exception as e:
+        print(f"⚠️ {symbol}: lỗi khi gọi API ({e})")
+        return []
+
+    if data.get("code") != "SUCCESS":
+        print(f"⚠️ {symbol}: API trả về lỗi {data.get('message')}")
+        return []
+
+    hist = data.get("data", {})
+    if not hist or "t" not in hist:
+        return []
+
+    records = []
+    for i in range(len(hist["t"])):
+        ts = hist["t"][i]
+        date = datetime.fromtimestamp(ts)
+        o = hist["o"][i]
+        h = hist["h"][i]
+        l = hist["l"][i]
+        c = hist["c"][i]
+        v = hist["v"][i]
+        records.append((symbol, date, o, h, l, c, v))
+    return records
+
+def save_stock_history(conn, records, exchange):
+    """Lưu dữ liệu lịch sử vào bảng stock_prices"""
+    if not records:
+        return
+
+    with conn.cursor() as cur:
+        execute_values(cur, """
+            INSERT INTO stock_prices (symbol, date, open, high, low, close, volume, exchange)
+            VALUES %s
+            ON CONFLICT (symbol, date)
+            DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume,
+                exchange = EXCLUDED.exchange;
+        """, [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], exchange) for r in records])
+    conn.commit()
+
+
+def update_exchange(conn, exchange: str, days: int = 100):
+    """Cập nhật lịch sử giá cho toàn bộ mã cổ phiếu trong 1 sàn"""
+    symbols = fetch_stock_data(exchange)
+    for symbol in [s[0] for s in symbols]:
+        time.sleep(0.2)  # tránh bị chặn API
+        records = fetch_stock_history(symbol, days)
+        if records:
+            save_stock_history(conn, records, exchange)
+            print(f"✅ {symbol} ({exchange}): {len(records)} ngày")
+        else:
+            print(f"⚠️ {symbol} ({exchange}): không có dữ liệu")
+
+
+def update_all(conn, days: int = 100):
+    """Quét cả HOSE và HNX"""
+    for ex in ["hose", "hnx"]:
+        print(f"\n=== 🔄 Bắt đầu cập nhật {ex} ===")
+        update_exchange(conn, ex, days)
+    print("🎯 Hoàn tất cập nhật toàn bộ!")
 
 # ===============================
 # Save to DB
@@ -176,9 +265,10 @@ def update_history():
     for idx in indexes:
         records = fetch_index_data(idx, has_history=True)
         save_rrg_data(conn, records)
-    for exch in ["hose", "hnx"]:
-        stock_records = fetch_stock_data(exch)
-        save_stock_data(conn, stock_records)
+    # for exch in ["hose", "hnx"]:
+    #     stock_records = fetch_stock_data(exch)
+    #     save_stock_data(conn, stock_records)
+    update_all(conn, days=200)
     conn.close()
 
 def update_latest():
