@@ -56,22 +56,21 @@ def fetch_index_data(symbol, has_history=True):
     records = []
 
     # Nếu có history
-    if has_history and "history" in data:
-        for item in data["history"]:
-            timestamp = item.get("time")
-            if not timestamp:
-                continue
-            date = datetime.fromtimestamp(timestamp / 1000)
-            price = item.get("indexValue")
-            volume = item.get("totalQtty", 0)
-            records.append((symbol, date, price, None, None, volume))
-    else:
-        timestamp = data.get("time")
-        if timestamp:
-            date = datetime.fromtimestamp(timestamp / 1000)
-            price = data.get("indexValue")
-            volume = data.get("totalQtty", 0)
-            records.append((symbol, date, price, None, None, volume))
+
+    timestamp = data.get("time")
+    if timestamp:
+        date = datetime.fromtimestamp(timestamp / 1000)
+        price = data.get("indexValue")
+        volume = data.get("totalQtty", 0)
+        # records.append((symbol, date, price, None, None, volume))
+
+        # date = datetime.strptime(trading_date, "%Y%m%d")
+        close_price = data.get("indexValue")
+        open_price = data.get("chartOpen")
+        high = data.get("chartHigh")
+        low = data.get("chartLow")
+        volume = data.get("totalQtty", 0)
+        records.append((symbol, date, open_price, high, low, close_price, volume, symbol.upper()))
 
     print(f"✅ Fetched {len(records)} records for {symbol}")
     return records
@@ -182,15 +181,15 @@ def save_stock_history(conn, records, exchange):
 
 def update_exchange(conn, exchange: str, days: int = 100):
     """Cập nhật lịch sử giá cho toàn bộ mã cổ phiếu trong 1 sàn"""
-    # symbols = fetch_stock_data(exchange)
-    # for symbol in [s[0] for s in symbols]:
-    #     time.sleep(0.2)  # tránh bị chặn API
-    #     records = fetch_stock_history(symbol, days)
-    #     if records:
-    #         save_stock_history(conn, records, exchange)
-    #         print(f"✅ {symbol} ({exchange}): {len(records)} ngày")
-    #     else:
-    #         print(f"⚠️ {symbol} ({exchange}): không có dữ liệu")
+    symbols = fetch_stock_data(exchange)
+    for symbol in [s[0] for s in symbols]:
+        time.sleep(0.2)  # tránh bị chặn API
+        records = fetch_stock_history(symbol, days)
+        if records:
+            save_stock_history(conn, records, exchange)
+            print(f"✅ {symbol} ({exchange}): {len(records)} ngày")
+        else:
+            print(f"⚠️ {symbol} ({exchange}): không có dữ liệu")
 
     symbol = "VNINDEX"
     records = fetch_stock_history(symbol, days)
@@ -305,8 +304,8 @@ def update_latest():
     for idx in indexes:
         records = fetch_index_data(idx, has_history=False)
         
-
-        save_rrg_data(conn, records)
+        save_stock_data(conn, records)
+        # save_rrg_data(conn, records)
     for exch in ["hose", "hnx"]:
         stock_records = fetch_stock_data(exch)
         print("Sample record:", stock_records[0])

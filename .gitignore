@@ -12,7 +12,7 @@ venv/
 .streamlit/secrets.toml
 
 # VSCode
-.vscode/
+# .vscode/
 
 # Devcontainer
 .devcontainer/.env

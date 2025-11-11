@@ -1,0 +1,48 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Streamlit App",
+            "type": "python",
+            "request": "launch",
+            "program": "-m",
+            "args": [
+                "streamlit",
+                "run",
+                "rrg_app.py",
+                "--server.port",
+                "8501"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Debugger: feed data history",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "update_ssi_prices.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--mode",
+                "history"
+            ]
+        },
+        {
+            "name": "Debugger: feed data today",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "update_ssi_prices.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--mode",
+                "latest"
+            ]
+        }
+    ]
+}
