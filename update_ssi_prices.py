@@ -46,7 +46,7 @@ def fetch_index_data(symbol, has_history=True):
     print(f"🔹 Fetching {symbol} data (history={has_history}) ...")
 
     try:
-        resp = requests.get(base_url, headers=HEADERS, timeout=15)
+        resp = requests.get(base_url, headers=headers, timeout=15)
         resp.raise_for_status()
         data = resp.json().get("data", {})
     except Exception as e:
@@ -64,19 +64,14 @@ def fetch_index_data(symbol, has_history=True):
             date = datetime.fromtimestamp(timestamp / 1000)
             price = item.get("indexValue")
             volume = item.get("totalQtty", 0)
-            price_change = None
-            price_change_percent = None
-            records.append((symbol, date, price, price_change, price_change_percent, volume))
+            records.append((symbol, date, price, None, None, volume))
     else:
-        # Chỉ lấy latest snapshot
         timestamp = data.get("time")
         if timestamp:
             date = datetime.fromtimestamp(timestamp / 1000)
             price = data.get("indexValue")
-            price_change = data.get("change")
-            price_change_percent = data.get("changePercent")
             volume = data.get("totalQtty", 0)
-            records.append((symbol, date, price, price_change, price_change_percent, volume))
+            records.append((symbol, date, price, None, None, volume))
 
     print(f"✅ Fetched {len(records)} records for {symbol}")
     return records
@@ -94,14 +89,24 @@ def fetch_stock_data(exchange):
     data = resp.json().get("data", [])
 
     records = []
+    def div_thousand(value):
+        if value is None:
+            return None
+        try:
+            return value / 1000
+        except Exception:
+            return None
     for item in data:
         symbol = item.get("stockSymbol")
         trading_date = item.get("tradingDate")
+        if not trading_date:
+            # Skip malformed items without date
+            continue
         date = datetime.strptime(trading_date, "%Y%m%d")
-        close_price = item.get("matchedPrice")
-        open_price = item.get("openPrice")
-        high = item.get("highest")
-        low = item.get("lowest")
+        close_price = div_thousand(item.get("matchedPrice"))
+        open_price = div_thousand(item.get("openPrice"))
+        high = div_thousand(item.get("highest"))
+        low = div_thousand(item.get("lowest"))
         volume = item.get("nmTotalTradedQty")
         records.append((symbol, date, open_price, high, low, close_price, volume, exchange.upper()))
 
@@ -177,16 +182,23 @@ def save_stock_history(conn, records, exchange):
 
 def update_exchange(conn, exchange: str, days: int = 100):
     """Cập nhật lịch sử giá cho toàn bộ mã cổ phiếu trong 1 sàn"""
-    symbols = fetch_stock_data(exchange)
-    for symbol in [s[0] for s in symbols]:
-        time.sleep(0.2)  # tránh bị chặn API
-        records = fetch_stock_history(symbol, days)
-        if records:
-            save_stock_history(conn, records, exchange)
-            print(f"✅ {symbol} ({exchange}): {len(records)} ngày")
-        else:
-            print(f"⚠️ {symbol} ({exchange}): không có dữ liệu")
+    # symbols = fetch_stock_data(exchange)
+    # for symbol in [s[0] for s in symbols]:
+    #     time.sleep(0.2)  # tránh bị chặn API
+    #     records = fetch_stock_history(symbol, days)
+    #     if records:
+    #         save_stock_history(conn, records, exchange)
+    #         print(f"✅ {symbol} ({exchange}): {len(records)} ngày")
+    #     else:
+    #         print(f"⚠️ {symbol} ({exchange}): không có dữ liệu")
 
+    symbol = "VNINDEX"
+    records = fetch_stock_history(symbol, days)
+    if records:
+        save_stock_history(conn, records, exchange)
+        print(f"✅ {symbol} ({exchange}): {len(records)} ngày")
+    else:
+        print(f"⚠️ {symbol} ({exchange}): không có dữ liệu")
 
 def update_all(conn, days: int = 100):
     """Quét cả HOSE và HNX"""
@@ -210,8 +222,15 @@ def save_rrg_data(conn, records, table="rrg_index_data"):
         return
 
     with conn.cursor() as cur:
-        # Loại bỏ trùng (symbol, date)
-        unique_records = {(r[0], r[1]): r for r in records}
+        # Loại bỏ trùng (symbol, date) theo ngày (DB thường dùng DATE, không phải TIMESTAMP)
+        normalized_records = []
+        for r in records:
+            symbol = r[0]
+            dt = r[1]
+            date_only = dt.date() if isinstance(dt, datetime) else dt
+            normalized_records.append((symbol, date_only, r[2], r[3], r[4], r[5]))
+
+        unique_records = {(r[0], r[1]): r for r in normalized_records}
         records = list(unique_records.values())
 
         # Chèn hoặc cập nhật dữ liệu
@@ -239,7 +258,16 @@ def save_stock_data(conn, records, table="stock_prices"):
         print("⚠️ No stock records to save.")
         return
     with conn.cursor() as cur:
-        unique_records = {(r[0], r[1]): r for r in records}
+        # Chuẩn hóa ngày (DATE) để tránh trùng trong cùng lệnh INSERT ... ON CONFLICT
+        normalized_records = []
+        for r in records:
+            symbol = r[0]
+            dt = r[1]
+            date_only = dt.date() if isinstance(dt, datetime) else dt
+            # (symbol, date, open, high, low, close, volume, exchange)
+            normalized_records.append((symbol, date_only, r[2], r[3], r[4], r[5], r[6], r[7]))
+
+        unique_records = {(r[0], r[1]): r for r in normalized_records}
         records = list(unique_records.values())
 
         execute_values(cur, f"""
@@ -262,9 +290,9 @@ def save_stock_data(conn, records, table="stock_prices"):
 def update_history():
     conn = get_db_connection()
     indexes = ["VNINDEX", "HNXIndex"]
-    for idx in indexes:
-        records = fetch_index_data(idx, has_history=True)
-        save_rrg_data(conn, records)
+    # for idx in indexes:
+    #     records = fetch_index_data(idx, has_history=True)
+    #     save_rrg_data(conn, records)
     # for exch in ["hose", "hnx"]:
     #     stock_records = fetch_stock_data(exch)
     #     save_stock_data(conn, stock_records)
