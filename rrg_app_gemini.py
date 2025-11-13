@@ -9,28 +9,34 @@ from dotenv import load_dotenv
 import os
 
 # =====================
+# CẤU HÌNH CỐ ĐỊNH
+# =====================
+BENCHMARK_SYMBOL = 'VNINDEX' # Mã chuẩn cố định
+RRG_PERIOD = 50              # Chu kỳ RRG cố định (WMA length)
+DAYS_FOR_CHART = 365         # Số ngày mặc định để vẽ biểu đồ (1 năm)
+SCALE_FACTOR = 5.5           # Hệ số scale để dịch chuyển Z-Score về tâm 100
+
+# =====================
 # LOAD .ENV CONFIG
 # =====================
 load_dotenv()
 
-# Sử dụng giá trị mặc định an toàn cho các biến môi trường
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "stock_db")
 
-# Chỉ tạo DB_CONN nếu có đủ thông tin cần thiết
 if all([DB_USER, DB_PASSWORD, DB_HOST, DB_NAME]):
     DB_CONN = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 else:
     DB_CONN = None
-    st.error("Thiếu cấu hình biến môi trường DB (DB_USER, DB_PASSWORD, DB_HOST, DB_NAME). Vui lòng kiểm tra file .env.")
+    st.error("Thiếu cấu hình biến môi trường DB.")
 
 # =====================
 # PAGE CONFIG
 # =====================
-st.set_page_config(page_title="RRG Chart — Fast & Smooth", layout="wide")
+st.set_page_config(page_title="RRG Chart — VN Index", layout="wide")
 
 # =====================
 # ABSTRACT DATA SOURCE
@@ -39,14 +45,15 @@ class DataSource(ABC):
     @abstractmethod
     def get_data(self, symbols, start_date, end_date) -> pd.DataFrame:
         pass
+    
+    @abstractmethod
+    def get_available_symbols(self) -> list:
+        pass
 
 # =====================
 # CUSTOM DB SOURCE
 # =====================
 class CustomDBSource(DataSource):
-    """
-    Lấy dữ liệu giá cổ phiếu từ database.
-    """
 
     def __init__(self, connection_string=None):
         self.connection_string = connection_string
@@ -56,15 +63,32 @@ class CustomDBSource(DataSource):
                 self.engine = sqlalchemy.create_engine(connection_string)
             except Exception as e:
                 st.warning(f"Không thể khởi tạo kết nối DB: {e}")
+    
+    # @st.cache_data(ttl=3600) # Cache danh sách mã 1 tiếng
+    def get_available_symbols(self) -> list:
+        """Lấy danh sách các mã chứng khoán có sẵn trong DB."""
+        if self.engine is None:
+            return []
+        
+        query = "SELECT DISTINCT symbol FROM stock_prices ORDER BY symbol ASC"
+        try:
+            df = pd.read_sql(query, self.engine)
+            # Thêm VNINDEX nếu chưa có (để đảm bảo lấy được dữ liệu benchmark)
+            symbols = df['symbol'].tolist()
+            if BENCHMARK_SYMBOL not in symbols:
+                symbols.insert(0, BENCHMARK_SYMBOL)
+            return symbols
+        except Exception as e:
+            st.error(f"Lỗi khi truy vấn danh sách mã: {e}")
+            return []
 
     def get_data(self, symbols=None, start_date=None, end_date=None):
         if self.engine is None:
             return pd.DataFrame()
 
         all_symbols = list(symbols) if symbols else []
-        benchmark_symbol = st.session_state.get('benchmark', 'VNINDEX') 
-        if benchmark_symbol not in all_symbols:
-            all_symbols.append(benchmark_symbol)
+        if BENCHMARK_SYMBOL not in all_symbols:
+            all_symbols.append(BENCHMARK_SYMBOL)
 
         where_clause = "1=1"
         if all_symbols:
@@ -88,7 +112,6 @@ class CustomDBSource(DataSource):
         try:
             df = pd.read_sql(query, self.engine)
             if df.empty:
-                st.warning("Không tìm thấy dữ liệu cho các mã và khoảng thời gian đã chọn.")
                 return pd.DataFrame()
                 
             df["date"] = pd.to_datetime(df["date"])
@@ -112,7 +135,6 @@ def wma_func(x: pd.Series, period: int) -> float:
     weights = np.arange(1, len(x) + 1)
     weights = weights[len(weights) - period:] if len(weights) > period else weights
     
-    # Chỉ tính WMA nếu có đủ dữ liệu bằng với số lượng trọng số
     if len(x) < len(weights):
         return np.nan
 
@@ -120,21 +142,16 @@ def wma_func(x: pd.Series, period: int) -> float:
 
 
 @st.cache_data
-def calculate_rrg_data(df: pd.DataFrame, benchmark_symbol: str, period: int = 14) -> pd.DataFrame:
+def calculate_rrg_data(df: pd.DataFrame, benchmark_symbol: str, period: int, scale_factor: float) -> pd.DataFrame:
     """
-    Tính toán chỉ số RRG (RS-Ratio và RS-Momentum) bằng WMA và 
-    Chuẩn hóa Z-Score, sau đó Dịch chuyển về tâm 100.
+    Tính toán chỉ số RRG (RS-Ratio và RS-Momentum) bằng WMA, 
+    Chuẩn hóa Z-Score, và Dịch chuyển về tâm 100.
     """
     df = df.copy()
-    
-    if df.empty:
-        return pd.DataFrame()
+    if df.empty: return pd.DataFrame()
 
     close_prices = df.pivot(index='date', columns='symbol', values='close')
-
-    if benchmark_symbol not in close_prices.columns:
-        return df
-
+    if benchmark_symbol not in close_prices.columns: return df
     benchmark = close_prices[benchmark_symbol]
     
     # --- A. Tính toán RS và RM (Chưa chuẩn hóa) ---
@@ -162,19 +179,11 @@ def calculate_rrg_data(df: pd.DataFrame, benchmark_symbol: str, period: int = 14
             rrg_results_long = pd.concat([rrg_results_long, temp_df])
 
     # 3. CHUẨN HÓA VÀ DỊCH CHUYỂN TÂM 100
-    
-    # Chuẩn hóa Z-Score: (data - mean) / std (Tâm 0)
     rrg_results_long['rs_ratio_z'] = normalize_data(rrg_results_long['rs_ratio'])
     rrg_results_long['rs_momentum_z'] = normalize_data(rrg_results_long['rs_momentum'])
-
-    # Dịch chuyển tâm về 100 (Scaling):
-    # Công thức: Z-Score * Độ lệch chuẩn mục tiêu + 100
-    # Ta sử dụng hệ số 5.5 hoặc 6.5 cho độ lệch chuẩn mục tiêu để tạo độ "lan" hợp lý, 
-    # tương tự cách các nền tảng RRG thương mại sử dụng.
-    SCALE_FACTOR = 5.5
     
-    rrg_results_long['rs_ratio_scaled'] = 100 + rrg_results_long['rs_ratio_z'] * SCALE_FACTOR
-    rrg_results_long['rs_momentum_scaled'] = 100 + rrg_results_long['rs_momentum_z'] * SCALE_FACTOR
+    rrg_results_long['rs_ratio_scaled'] = 100 + rrg_results_long['rs_ratio_z'] * scale_factor
+    rrg_results_long['rs_momentum_scaled'] = 100 + rrg_results_long['rs_momentum_z'] * scale_factor
     
     # 4. Merge kết quả với DataFrame gốc
     rrg_results_long = rrg_results_long.reset_index(drop=True) 
@@ -195,14 +204,11 @@ def calculate_rrg_data(df: pd.DataFrame, benchmark_symbol: str, period: int = 14
 # =====================
 
 def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, period: int):
-    """
-    Vẽ biểu đồ RRG Time Series cho một mã chứng khoán sử dụng dữ liệu scaled (tâm 100).
-    """
+    """Vẽ biểu đồ RRG Time Series (Tâm 100)."""
     if rrg_df.empty:
         st.info("Không có dữ liệu RRG để vẽ biểu đồ.")
         return
 
-    # Lấy dữ liệu đã được SCALED VỀ TÂM 100
     rs = rrg_df[rrg_df['symbol'] == symbol]['rs_ratio_scaled']
     rm = rrg_df[rrg_df['symbol'] == symbol]['rs_momentum_scaled']
 
@@ -212,13 +218,8 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
 
     fig, ax = plt.subplots(figsize=(10, 10))
 
-    # Định nghĩa 4 góc phần tư
-    quadrant_colors = {
-        'Leading': 'green',
-        'Weakening': '#ffc000',  # Màu vàng/cam
-        'Lagging': 'red',
-        'Improving': 'blue'
-    }
+    # Định nghĩa màu sắc 4 góc phần tư
+    quadrant_colors = {'Leading': 'green', 'Weakening': '#ffc000', 'Lagging': 'red', 'Improving': 'blue'}
 
     # Vẽ các đường ngang và dọc chuẩn (TÂM 100)
     ax.axhline(100, color='gray', linestyle='--', linewidth=0.8)
@@ -231,7 +232,7 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
     ax.set_xlim(min_val - padding, max_val + padding)
     ax.set_ylim(min_val - padding, max_val + padding)
     
-    # Xác định quadrant cho từng điểm dữ liệu
+    # Xác định quadrant
     quadrants = pd.Series(index=rs.index, dtype=str)
     quadrants[(rs >= 100) & (rm >= 100)] = 'Leading'
     quadrants[(rs >= 100) & (rm < 100)] = 'Weakening'
@@ -251,7 +252,7 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
             zorder=3
         )
 
-    # Điểm cuối cùng (Điểm RRG hiện tại)
+    # Điểm cuối cùng (Hiện tại)
     ax.scatter(rs.iloc[-1], rm.iloc[-1], color='black', s=150, zorder=5) 
     ax.text(rs.iloc[-1], rm.iloc[-1], symbol, fontsize=12, ha='right', va='bottom', zorder=6) 
 
@@ -265,11 +266,11 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
     ax.text(ax.get_xlim()[0] * 1.05, ax.get_ylim()[1] * 0.95, 'Improving', fontsize=12, color='#ffc000', ha='left', va='top')
 
 
-    ax.set_title(f'RRG Time Series Chart: {symbol} vs {benchmark} (Period: {period} ngày)', fontsize=14)
+    ax.set_title(f'RRG Time Series Chart: {symbol} vs {benchmark} (Chu kỳ: {period} ngày)', fontsize=14)
     ax.set_xlabel('Relative Strength (RS Ratio)')
     ax.set_ylabel('Relative Momentum (RM Momentum)')
     ax.grid(True, linestyle=':', alpha=0.6)
-    ax.set_aspect('equal', adjustable='box') # Bắt buộc tỷ lệ 1:1
+    ax.set_aspect('equal', adjustable='box') 
 
     st.pyplot(fig)
 
@@ -278,85 +279,109 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
 # STREAMLIT APP
 # =====================
 def main():
-    st.title("📈 RRG Time Series Chart (Chuẩn hóa Tâm 100)")
+    st.title("📈 RRG Time Series Chart (VNINDEX - P50)")
 
     # Khởi tạo nguồn dữ liệu
     data_source = CustomDBSource(DB_CONN)
     
+    # Lấy danh sách mã chứng khoán từ DB
+    # 1. Định nghĩa khóa cache
+    CACHE_KEY_SYMBOLS = "cached_symbols_list"
+    
+    # 2. Kiểm tra nếu danh sách mã chưa có trong cache
+    if CACHE_KEY_SYMBOLS not in st.session_state:
+        with st.spinner("Đang tải danh sách mã chứng khoán lần đầu..."):
+            # Gọi phương thức lấy dữ liệu từ DB (không có @st.cache_data)
+            symbols_list = data_source.get_available_symbols() 
+            
+            # Lưu kết quả vào session_state
+            st.session_state[CACHE_KEY_SYMBOLS] = symbols_list
+            
+    all_available_symbols = st.session_state[CACHE_KEY_SYMBOLS]
+
+    if not all_available_symbols:
+        st.error("Không thể tải danh sách mã chứng khoán từ database.")
+        return
+
     # --- Sidebar Inputs ---
     with st.sidebar:
         st.header("⚙️ Cấu hình Chart")
         
-        # 1. Mã chuẩn (Benchmark)
-        available_benchmarks = ['VNINDEX', 'HNXINDEX', 'UPCOMINDEX', 'VN30'] 
-        benchmark_default = 'VNINDEX'
-        
-        benchmark_input = st.selectbox(
-            "Chọn mã chuẩn (Benchmark)",
-            options=available_benchmarks,
-            index=available_benchmarks.index(benchmark_default) if benchmark_default in available_benchmarks else 0,
-            key='benchmark'
-        )
+        # 1. Mã chuẩn (Cố định)
+        st.info(f"Mã chuẩn: **{BENCHMARK_SYMBOL}** (Cố định)")
 
-        # 2. Mã chứng khoán cần vẽ (Autocomplete)
-        # Giả định danh sách mã để demo autocomplete
-        all_available_symbols = ['FPT', 'HPG', 'VCB', 'ACB', 'VND', 'SSI', 'GAS', 'MWG', 'MSN']
-        
+        # 2. Chu kỳ RRG (Cố định)
+        st.info(f"Chu kỳ RRG: **{RRG_PERIOD} ngày** (Cố định)")
+
+        # 3. Mã chứng khoán cần vẽ (Lấy từ DB)
         selected_symbol = st.selectbox(
-            "Nhập Mã chứng khoán cần vẽ (Ví dụ: FPT)",
+            "Nhập Mã chứng khoán cần vẽ",
             options=all_available_symbols,
-            index=all_available_symbols.index('FPT') if 'FPT' in all_available_symbols else 0,
+            index=all_available_symbols.index('FPT') if 'FPT' in all_available_symbols else (0 if all_available_symbols else None),
             key='selected_symbol'
         )
 
-        # 3. Date Pickers
+        # 4. Date Pickers (Tự động tính ngày bắt đầu)
         today = datetime.now().date()
-        default_start_date = today - timedelta(days=365)
-        
-        date_from = st.date_input("Ngày Bắt đầu", value=default_start_date, max_value=today - timedelta(days=1))
         date_to = st.date_input("Ngày Kết thúc", value=today, max_value=today)
 
-        # 4. RRG Period
-        rrg_period = st.slider("Chu kỳ RRG (Ngày - cho WMA)", min_value=1, max_value=50, value=14, step=1, key='rrg_period')
+        # Ngày bắt đầu phải đủ xa để tính WMA 50 ngày và vẽ 1 năm dữ liệu
+        # Ta cần ít nhất 50 ngày trước ngày bắt đầu để tính RRG đầu tiên.
+        min_start_date_needed = date_to - timedelta(days=DAYS_FOR_CHART + RRG_PERIOD * 2)
         
-        st.info("Chu kỳ RRG thường dùng 10 hoặc 14 ngày.")
-
+        # Ngày bắt đầu mặc định cho người dùng thấy
+        default_date_from = date_to - timedelta(days=DAYS_FOR_CHART)
+        
+        date_from = st.date_input("Ngày Bắt đầu", 
+                                value=default_date_from, 
+                                max_value=date_to - timedelta(days=1),
+                                help=f"Hệ thống sẽ lấy dữ liệu từ ngày {min_start_date_needed.strftime('%Y-%m-%d')} để đảm bảo tính toán đủ 50 ngày WMA."
+                            )
 
     # --- Main App Logic ---
     if not selected_symbol:
         st.warning("Vui lòng chọn Mã chứng khoán cần vẽ.")
         return
 
-    # Lấy dữ liệu
-    all_symbols_to_fetch = [selected_symbol, benchmark_input]
+    # Tính toán ngày cần thiết để lấy dữ liệu thô (để có đủ 50 ngày WMA trước ngày date_from)
+    fetch_start_date = date_from - timedelta(days=RRG_PERIOD * 2) 
     
-    with st.spinner(f"Đang tải dữ liệu cho {', '.join(all_symbols_to_fetch)}..."):
+    # Lấy dữ liệu
+    all_symbols_to_fetch = [selected_symbol, BENCHMARK_SYMBOL]
+    
+    with st.spinner(f"Đang tải dữ liệu cho {', '.join(all_symbols_to_fetch)} từ {fetch_start_date} đến {date_to}..."):
         data_df = data_source.get_data(
             symbols=all_symbols_to_fetch, 
-            start_date=date_from, 
+            start_date=fetch_start_date, # Dùng ngày bắt đầu mở rộng
             end_date=date_to
         )
 
     if data_df.empty:
-        st.warning("Không có dữ liệu để tính toán RRG.")
+        st.error(f"❌ Không có dữ liệu để tính RRG cho {selected_symbol} hoặc {BENCHMARK_SYMBOL} trong khoảng thời gian yêu cầu.")
         return
 
     # Tính toán RRG (Đã được SCALED về tâm 100)
-    with st.spinner("Đang tính toán chỉ số RRG và Chuẩn hóa (Tâm 100)..."):
-        # Lỗi Scope đã được xử lý: biến được truyền vào hàm
-        rrg_df = calculate_rrg_data(
+    with st.spinner(f"Đang tính toán chỉ số RRG (P={RRG_PERIOD}) và Chuẩn hóa (Tâm 100)..."):
+        rrg_df_raw = calculate_rrg_data(
             data_df, 
-            benchmark_symbol=benchmark_input, 
-            period=rrg_period
+            benchmark_symbol=BENCHMARK_SYMBOL, 
+            period=RRG_PERIOD,
+            scale_factor=SCALE_FACTOR
         )
 
-    if rrg_df.empty or 'rs_ratio_scaled' not in rrg_df.columns:
-        st.error(f"Không thể tính RRG cho mã {selected_symbol}. Vui lòng kiểm tra dữ liệu.")
+    if rrg_df_raw.empty or 'rs_ratio_scaled' not in rrg_df_raw.columns:
+        st.error(f"❌ Không thể tính RRG. Có thể dữ liệu không đủ {RRG_PERIOD} ngày liên tiếp.")
         return
+        
+    # Lọc lại dữ liệu để chỉ hiển thị trên biểu đồ trong khoảng ngày mà người dùng đã chọn
+    rrg_df = rrg_df_raw[rrg_df_raw['date'] >= pd.to_datetime(date_from)]
 
+    if rrg_df.empty:
+        st.warning("Dữ liệu sau khi tính RRG không còn điểm nào trong khoảng ngày bạn chọn.")
+        return
+        
     # Vẽ biểu đồ
-    st.subheader(f"Biểu đồ RRG Time Series: **{selected_symbol}**")
-    plot_rrg_time_series(rrg_df, selected_symbol, benchmark_input, rrg_period)
+    plot_rrg_time_series(rrg_df, selected_symbol, BENCHMARK_SYMBOL, RRG_PERIOD)
     
     st.markdown("---")
     st.subheader("Dữ liệu RRG đã tính toán và Chuẩn hóa (Top 5)")
