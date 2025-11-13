@@ -25,7 +25,7 @@ DB_CONN = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{D
 # =====================
 #  PAGE CONFIG
 # =====================
-st.set_page_config(page_title="RRG Chart — Volume Filter", layout="wide")
+st.set_page_config(page_title="RRG Chart — Symbol Input", layout="wide")
 
 # =====================
 #  ABSTRACT DATA SOURCE
@@ -102,38 +102,123 @@ def calculate_rrg_data(df, benchmark_symbol='VNINDEX', period=21):
     
     return df
 
-# =====================
-#  VOLUME FILTER FUNCTIONS
-# =====================
-def calculate_volume_stats(df, window=10):
+def calculate_rrg_data_improved(df: pd.DataFrame, benchmark_symbol: str, period: int = 14) -> pd.DataFrame:
     """
-    Tính volume trung bình 10 ngày cho mỗi mã
-    """
-    # Lọc dữ liệu 10 ngày gần nhất
-    latest_date = df['date'].max()
-    start_date = latest_date - timedelta(days=window * 2)  # Lấy thêm dữ liệu để tính trung bình
-    
-    recent_data = df[df['date'] >= start_date].copy()
-    
-    # Tính volume trung bình 10 ngày cho mỗi symbol
-    volume_stats = recent_data.groupby('symbol').apply(
-        lambda x: x.nlargest(window, 'date')['volume'].mean()
-    ).reset_index()
-    volume_stats.columns = ['symbol', 'avg_volume_10d']
-    
-    return volume_stats
+    Tính toán chỉ số RRG (RS-Ratio và RS-Momentum) theo phương pháp 
+    sử dụng WMA (Weighted Moving Average), tương tự logic của JdK RRG.
 
-def filter_symbols_by_volume(df, min_volume):
+    Args:
+        df (pd.DataFrame): DataFrame giá đóng cửa (long format: date, symbol, close).
+        benchmark_symbol (str): Mã chuẩn (ví dụ: 'VNINDEX').
+        period (int): Chu kỳ (length) cho WMA.
+
+    Returns:
+        pd.DataFrame: DataFrame gốc với thêm cột 'rs_ratio' và 'rs_momentum'.
     """
-    Lọc các mã có volume trung bình 10 ngày >= min_volume
+    df = df.copy()
+    
+    if df.empty:
+        return pd.DataFrame(columns=['date', 'symbol', 'close', 'rs_ratio', 'rs_momentum'])
+
+    # 1. Pivot để có giá đóng cửa dạng rộng (Wide format)
+    close_prices = df.pivot(index='date', columns='symbol', values='close')
+
+    if benchmark_symbol not in close_prices.columns:
+        # Nếu benchmark không có, trả về DataFrame gốc để tránh lỗi
+        return df
+
+    benchmark = close_prices[benchmark_symbol]
+    
+    # Định nghĩa hàm tính WMA trên cửa sổ lăn
+    def wma_func(x):
+        # Tính trọng số cho WMA (1, 2, 3, ..., period)
+        weights = np.arange(1, len(x) + 1)
+        # Nếu cửa sổ chưa đủ (đầu chuỗi), điều chỉnh trọng số
+        weights = weights[len(weights) - period:] if len(weights) > period else weights
+        
+        # Nếu chưa đủ period, ta vẫn tính WMA với số phần tử hiện có
+        return np.sum(x.values[-len(weights):] * weights) / np.sum(weights)
+
+
+    # --- A. Tính toán Tỷ lệ Sức mạnh Tương đối (RS) ---
+    # Tỷ lệ giá (RS Line) = Price / Benchmark Price (Dạng Wide format)
+    rs_line = close_prices.div(benchmark, axis=0)
+    
+    # --- B. Tính toán RS-Ratio (Relative Strength) ---
+    # Lấy WMA của RS Line
+    wma_rs_line = rs_line.rolling(window=period, min_periods=period).apply(wma_func, raw=False)
+
+    # Tính RS-Ratio = (RS Line / WMA của RS Line) * 100
+    rs_ratio_wide = (rs_line / wma_rs_line) * 100
+
+    # --- C. Tính toán RS-Momentum (Relative Momentum) ---
+    # Lấy WMA của RS-Ratio
+    wma_rs_ratio = rs_ratio_wide.rolling(window=period, min_periods=period).apply(wma_func, raw=False)
+    
+    # Tính RS-Momentum = (RS-Ratio / WMA của RS-Ratio) * 100
+    rs_momentum_wide = (rs_ratio_wide / wma_rs_ratio) * 100
+
+    # 2. Chuyển kết quả về dạng dài (Long format) và Merge
+    
+    # Tạo DataFrame kết quả dạng dài
+    results_df = pd.DataFrame(index=rs_ratio_wide.index)
+    
+    for symbol in rs_ratio_wide.columns:
+        if symbol != benchmark_symbol:
+            # Chuyển đổi Series (RS, RM) thành DataFrame tạm thời
+            temp_df = pd.DataFrame({
+                'date': rs_ratio_wide.index,
+                'symbol': symbol,
+                'rs_ratio': rs_ratio_wide[symbol].values,
+                'rs_momentum': rs_momentum_wide[symbol].values
+            })
+            results_df = pd.concat([results_df, temp_df])
+
+    # 3. Merge kết quả với DataFrame gốc
+    # Loại bỏ chỉ số date không cần thiết trước khi merge
+    results_df = results_df.reset_index(drop=True) 
+
+    # Merge dựa trên 'date' và 'symbol'
+    # Lưu ý: DataFrame gốc (df) đã bị sort và không có index 'date' sau copy, 
+    # nên ta merge trực tiếp vào df.
+    df = df.merge(
+        results_df[['date', 'symbol', 'rs_ratio', 'rs_momentum']], 
+        on=['date', 'symbol'], 
+        how='left'
+    )
+    
+    # 4. Loại bỏ các dòng có giá trị NaN (do rolling window)
+    df = df.dropna(subset=['rs_ratio', 'rs_momentum'])
+    
+    return df
+
+# =====================
+#  SYMBOL MANAGEMENT
+# =====================
+def get_all_symbols_from_db():
     """
-    volume_stats = calculate_volume_stats(df)
-    filtered_symbols = volume_stats[volume_stats['avg_volume_10d'] >= min_volume]['symbol'].tolist()
+    Lấy tất cả symbols có trong database (trừ VNINDEX)
+    """
+    try:
+        data_source = CustomDBSource(DB_CONN)
+        # Query để lấy tất cả symbols duy nhất
+        query = "SELECT DISTINCT symbol FROM stock_prices WHERE symbol != 'VNINDEX' ORDER BY symbol"
+        df = pd.read_sql(query, data_source.engine)
+        return df['symbol'].tolist()
+    except Exception as e:
+        st.error(f"❌ Lỗi khi lấy danh sách symbols: {e}")
+        return []
+
+def filter_symbols_by_keyword(symbols, keyword):
+    """
+    Lọc symbols theo keyword (case-insensitive)
+    """
+    if not keyword:
+        return symbols[:20]  # Trả về 20 symbols đầu tiên nếu không có keyword
     
-    # Loại bỏ VNINDEX khỏi danh sách filtered
-    filtered_symbols = [s for s in filtered_symbols if s != 'VNINDEX']
-    
-    return filtered_symbols, volume_stats
+    keyword = keyword.upper()
+    filtered = [s for s in symbols if keyword in s.upper()]
+    return filtered[:20]  # Giới hạn 20 kết quả
 
 # =====================
 #  DYNAMIC RANGE CALCULATION
@@ -468,18 +553,23 @@ def create_smoothed_rrg_chart(rrg_df, selected_symbols, days_back=30, smoothing_
 #  STREAMLIT UI
 # =====================
 def main():
-    st.title("📈 RRG Charts - Volume Filter & Interactive Selection")
-    st.markdown("**Lọc cổ phiếu theo volume và chọn interactive để hiển thị trên biểu đồ**")
+    st.title("📈 RRG Charts - Symbol Input với Autocomplete")
+    st.markdown("**Nhập mã cổ phiếu với autocomplete và quản lý danh sách hiển thị**")
     
-    # Initialize session state for selected symbols
+    # Initialize session state
     if 'selected_symbols' not in st.session_state:
         st.session_state.selected_symbols = []
     
-    if 'volume_filtered_symbols' not in st.session_state:
-        st.session_state.volume_filtered_symbols = []
+    if 'all_symbols' not in st.session_state:
+        st.session_state.all_symbols = []
     
     if 'rrg_data' not in st.session_state:
         st.session_state.rrg_data = None
+    
+    # Load all symbols on first run
+    if not st.session_state.all_symbols:
+        with st.spinner("Đang tải danh sách mã cổ phiếu..."):
+            st.session_state.all_symbols = get_all_symbols_from_db()
     
     # Sidebar controls
     st.sidebar.header("⚙️ Cài đặt tham số")
@@ -498,16 +588,65 @@ def main():
     period = st.sidebar.slider("Chu kỳ RRG (ngày)", min_value=5, max_value=50, value=21)
     days_back = st.sidebar.slider("Số ngày hiển thị", min_value=10, max_value=90, value=30)
     
-    # Volume filter settings
-    st.sidebar.markdown("### 🔍 Lọc theo Volume")
-    min_volume = st.sidebar.slider(
-        "Volume trung bình 10 ngày tối thiểu", 
-        min_value=10000, 
-        max_value=1000000, 
-        value=100000,
-        step=10000,
-        help="Chỉ hiển thị các mã có volume trung bình 10 ngày lớn hơn giá trị này"
+    # Symbol input with autocomplete
+    st.sidebar.markdown("### 🔍 Nhập mã cổ phiếu")
+    
+    # Search input
+    search_keyword = st.sidebar.text_input(
+        "Tìm kiếm mã cổ phiếu",
+        placeholder="Nhập mã (ví dụ: ACB, VCB, ...)",
+        help="Nhập mã cổ phiếu và nhấn Enter để thêm vào danh sách hiển thị"
     )
+    
+    # Hiển thị autocomplete suggestions
+    if search_keyword:
+        filtered_symbols = filter_symbols_by_keyword(st.session_state.all_symbols, search_keyword)
+        if filtered_symbols:
+            st.sidebar.markdown("**Gợi ý:**")
+            # Hiển thị suggestions dưới dạng buttons
+            cols = st.sidebar.columns(3)
+            for idx, symbol in enumerate(filtered_symbols[:9]):  # Hiển thị tối đa 9 suggestions
+                col_idx = idx % 3
+                with cols[col_idx]:
+                    if st.button(symbol, key=f"suggest_{symbol}", use_container_width=True):
+                        if symbol not in st.session_state.selected_symbols:
+                            st.session_state.selected_symbols.append(symbol)
+                            st.rerun()
+        else:
+            st.sidebar.info("Không tìm thấy mã nào phù hợp")
+    
+    # Xử lý khi nhấn Enter trong input
+    if search_keyword and search_keyword.upper() in st.session_state.all_symbols:
+        symbol_to_add = search_keyword.upper()
+        if symbol_to_add not in st.session_state.selected_symbols:
+            st.session_state.selected_symbols.append(symbol_to_add)
+            # Clear the input by rerunning
+            st.rerun()
+    
+    # Hiển thị danh sách mã đã chọn
+    st.sidebar.markdown("### 📋 Mã đang được chọn")
+    
+    if st.session_state.selected_symbols:
+        st.sidebar.info(f"**{len(st.session_state.selected_symbols)}** mã đang được chọn")
+        
+        # Hiển thị các mã đã chọn với option xoá
+        for symbol in st.session_state.selected_symbols[:]:  # Copy list để tránh modification during iteration
+            col1, col2, col3 = st.sidebar.columns([1, 3, 1])
+            with col1:
+                st.write("•")
+            with col2:
+                st.write(f"**{symbol}**")
+            with col3:
+                if st.button("❌", key=f"remove_{symbol}"):
+                    st.session_state.selected_symbols.remove(symbol)
+                    st.rerun()
+        
+        # Nút xoá tất cả
+        if st.sidebar.button("🗑️ Xoá tất cả", use_container_width=True):
+            st.session_state.selected_symbols = []
+            st.rerun()
+    else:
+        st.sidebar.warning("Chưa có mã nào được chọn")
     
     # Dynamic range settings
     padding_ratio = st.sidebar.slider("Padding (%)", min_value=5, max_value=30, value=10) / 100
@@ -519,82 +658,43 @@ def main():
         index=0
     )
     
-    # Load data button - chỉ load data, không reset selection
-    if st.sidebar.button("🔄 Tải dữ liệu mới"):
-        with st.spinner("Đang tải dữ liệu từ database..."):
-            try:
-                # Initialize data source
-                data_source = CustomDBSource(DB_CONN)
-                
-                # Get all symbols for volume filtering
-                all_df = data_source.get_data(
-                    symbols=None,  # Lấy tất cả symbols
-                    start_date=start_date_input.strftime('%Y-%m-%d'),
-                    end_date=end_date_input.strftime('%Y-%m-%d')
-                )
-                
-                if all_df.empty:
-                    st.error("❌ Không có dữ liệu cho khoảng thời gian đã chọn.")
-                    return
-                
-                if 'VNINDEX' not in all_df['symbol'].unique():
-                    st.error("❌ Không tìm thấy dữ liệu VNINDEX trong database.")
-                    return
-                
-                # Calculate volume stats and filter symbols
-                filtered_symbols, volume_stats = filter_symbols_by_volume(all_df, min_volume)
-                st.session_state.volume_filtered_symbols = filtered_symbols
-                
-                # Calculate RRG data for filtered symbols (including VNINDEX)
-                symbols_for_rrg = filtered_symbols + ['VNINDEX']
-                rrg_df = calculate_rrg_data(all_df[all_df['symbol'].isin(symbols_for_rrg)], 'VNINDEX', period)
-                st.session_state.rrg_data = rrg_df
-                
-                st.success(f"✅ Đã tải {len(rrg_df)} dòng dữ liệu. Tìm thấy {len(filtered_symbols)} mã thoả điều kiện volume.")
-                
-            except Exception as e:
-                st.error(f"❌ Lỗi: {str(e)}")
+    # Load data button
+    if st.sidebar.button("🔄 Tải dữ liệu mới", use_container_width=True):
+        if not st.session_state.selected_symbols:
+            st.sidebar.error("Vui lòng chọn ít nhất một mã cổ phiếu")
+        else:
+            with st.spinner("Đang tải dữ liệu từ database..."):
+                try:
+                    # Initialize data source
+                    data_source = CustomDBSource(DB_CONN)
+                    
+                    # Get data for selected symbols (including VNINDEX)
+                    symbols_for_data = st.session_state.selected_symbols + ['VNINDEX']
+                    df = data_source.get_data(
+                        symbols=symbols_for_data,
+                        start_date=start_date_input.strftime('%Y-%m-%d'),
+                        end_date=end_date_input.strftime('%Y-%m-%d')
+                    )
+                    
+                    if df.empty:
+                        st.error("❌ Không có dữ liệu cho các mã đã chọn.")
+                        return
+                    
+                    if 'VNINDEX' not in df['symbol'].unique():
+                        st.error("❌ Không tìm thấy dữ liệu VNINDEX trong database.")
+                        return
+                    
+                    # Calculate RRG data
+                    rrg_df = calculate_rrg_data_improved(df, 'VNINDEX', period)
+                    st.session_state.rrg_data = rrg_df
+                    
+                    st.success(f"✅ Đã tải dữ liệu cho {len(st.session_state.selected_symbols)} mã")
+                    
+                except Exception as e:
+                    st.error(f"❌ Lỗi: {str(e)}")
     
-    # Hiển thị volume filtered symbols và selection interface
-    if st.session_state.volume_filtered_symbols:
-        st.sidebar.markdown("### 📋 Chọn mã hiển thị")
-        
-        # Hiển thị số lượng mã được chọn
-        st.sidebar.info(f"**{len(st.session_state.selected_symbols)}** mã đang được chọn")
-        
-        # Hiển thị các mã được lọc theo volume dưới dạng clickable tags
-        st.sidebar.markdown("#### Các mã thoả điều kiện volume:")
-        
-        # Tạo columns để hiển thị các tag
-        cols = st.sidebar.columns(3)
-        for idx, symbol in enumerate(st.session_state.volume_filtered_symbols):
-            col_idx = idx % 3
-            with cols[col_idx]:
-                # Hiển thị tag, nếu click sẽ thêm vào selected symbols
-                if st.button(symbol, key=f"add_{symbol}", use_container_width=True):
-                    if symbol not in st.session_state.selected_symbols:
-                        st.session_state.selected_symbols.append(symbol)
-                        st.rerun()
-        
-        # Hiển thị danh sách mã đã chọn với option để xoá
-        if st.session_state.selected_symbols:
-            st.sidebar.markdown("#### Mã đang hiển thị:")
-            for symbol in st.session_state.selected_symbols[:]:  # Copy list để tránh modification during iteration
-                col1, col2 = st.sidebar.columns([3, 1])
-                with col1:
-                    st.write(f"**{symbol}**")
-                with col2:
-                    if st.button("❌", key=f"remove_{symbol}"):
-                        st.session_state.selected_symbols.remove(symbol)
-                        st.rerun()
-            
-            # Nút xoá tất cả
-            if st.sidebar.button("🗑️ Xoá tất cả"):
-                st.session_state.selected_symbols = []
-                st.rerun()
-    
-    # Render charts button - chỉ render lại chart, không load data mới
-    if st.sidebar.button("🎨 Vẽ/Render lại Biểu đồ") and st.session_state.rrg_data is not None and st.session_state.selected_symbols:
+    # Render charts button
+    if st.sidebar.button("🎨 Vẽ/Render lại Biểu đồ", use_container_width=True) and st.session_state.rrg_data is not None and st.session_state.selected_symbols:
         with st.spinner("Đang vẽ biểu đồ..."):
             try:
                 rrg_df = st.session_state.rrg_data
@@ -638,25 +738,28 @@ def main():
             except Exception as e:
                 st.error(f"❌ Lỗi khi vẽ biểu đồ: {str(e)}")
     
-    elif st.session_state.rrg_data is None:
-        st.warning("⚠️ Vui lòng nhấn 'Tải dữ liệu mới' trước")
+    elif st.session_state.rrg_data is None and st.session_state.selected_symbols:
+        st.warning("⚠️ Vui lòng nhấn 'Tải dữ liệu mới' trước khi vẽ biểu đồ")
     elif not st.session_state.selected_symbols:
         st.warning("⚠️ Vui lòng chọn ít nhất một mã cổ phiếu để hiển thị")
     
     # Default instructions
-    if not st.session_state.volume_filtered_symbols:
+    if not st.session_state.selected_symbols:
         st.info("""
         👈 **Hướng dẫn sử dụng:**
         
-        **Bước 1:** Nhấn **"Tải dữ liệu mới"** để lấy dữ liệu từ database
-        **Bước 2:** Chọn các mã cổ phiếu từ danh sách được lọc theo volume
+        **Bước 1:** Nhập mã cổ phiếu vào ô tìm kiếm và nhấn **Enter** hoặc chọn từ gợi ý
+        **Bước 2:** Nhấn **"Tải dữ liệu mới"** để lấy dữ liệu cho các mã đã chọn
         **Bước 3:** Nhấn **"Vẽ/Render lại Biểu đồ"** để hiển thị biểu đồ
         
         **Tính năng mới:**
-        - 🔍 Lọc theo volume trung bình 10 ngày
-        - 📋 Chọn mã interactive bằng cách click
-        - ❌ Xoá mã bằng nút delete
-        - 🎨 Render lại biểu đồ mà không cần tải lại dữ liệu
+        - 🔍 **Autocomplete**: Gợi ý mã khi nhập
+        - ⏎ **Enter để thêm**: Nhấn Enter sau khi nhập mã
+        - ❌ **Click để xoá**: Xoá từng mã khỏi danh sách
+        - 🗑️ **Xoá tất cả**: Xoá toàn bộ danh sách
+        - 🎨 **Render nhanh**: Vẽ lại biểu đồ mà không cần tải lại dữ liệu
+        
+        **Mã phổ biến:** ACB, BID, CTG, FPT, HPG, MBB, MSN, VCB, VIC, VHM
         """)
 
 if __name__ == "__main__":

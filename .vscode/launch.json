@@ -12,7 +12,7 @@
             "args": [
                 "streamlit",
                 "run",
-                "rrg_app.py",
+                "rrg_app_deep.py",
                 "--server.port",
                 "8501"
             ],
