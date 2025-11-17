@@ -14,7 +14,7 @@ import os
 BENCHMARK_SYMBOL = 'VNINDEX' # Mã chuẩn cố định
 RRG_PERIOD = 50              # Chu kỳ RRG cố định (WMA length)
 DAYS_FOR_CHART = 365         # Số ngày mặc định để vẽ biểu đồ (1 năm)
-SCALE_FACTOR = 5.5           # Hệ số scale để dịch chuyển Z-Score về tâm 100
+SCALE_FACTOR = 4.0           # Hệ số scale để dịch chuyển Z-Score về tâm 100
 
 # =====================
 # LOAD .ENV CONFIG
@@ -218,13 +218,11 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
 
     fig, ax = plt.subplots(figsize=(10, 10))
 
-    # Định nghĩa màu sắc 4 góc phần tư
+    # --- Cấu hình Chart (Giữ nguyên) ---
     quadrant_colors = {'Leading': 'green', 'Weakening': '#ffc000', 'Lagging': 'red', 'Improving': 'blue'}
-
-    # Vẽ các đường ngang và dọc chuẩn (TÂM 100)
     ax.axhline(100, color='gray', linestyle='--', linewidth=0.8)
     ax.axvline(100, color='gray', linestyle='--', linewidth=0.8)
-
+    
     # Đặt giới hạn trục X và Y
     min_val = min(rs.min(), rm.min(), 98)
     max_val = max(rs.max(), rm.max(), 102)
@@ -259,11 +257,6 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
     # Điểm đầu tiên
     ax.scatter(rs.iloc[0], rm.iloc[0], color='gray', s=50, marker='o', zorder=5)
 
-    # Thêm nhãn góc phần tư
-    ax.text(ax.get_xlim()[1] * 0.95, ax.get_ylim()[1] * 0.95, 'Leading', fontsize=12, color='green', ha='right', va='top')
-    ax.text(ax.get_xlim()[1] * 0.95, ax.get_ylim()[0] * 1.05, 'Weakening', fontsize=12, color='red', ha='right', va='bottom')
-    ax.text(ax.get_xlim()[0] * 1.05, ax.get_ylim()[0] * 1.05, 'Lagging', fontsize=12, color='blue', ha='left', va='bottom')
-    ax.text(ax.get_xlim()[0] * 1.05, ax.get_ylim()[1] * 0.95, 'Improving', fontsize=12, color='#ffc000', ha='left', va='top')
 
 
     ax.set_title(f'RRG Time Series Chart: {symbol} vs {benchmark} (Chu kỳ: {period} ngày)', fontsize=14)
@@ -273,7 +266,6 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
     ax.set_aspect('equal', adjustable='box') 
 
     st.pyplot(fig)
-
 
 # =====================
 # STREAMLIT APP

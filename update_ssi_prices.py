@@ -1,7 +1,7 @@
 import os
 import psycopg2
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 import schedule
@@ -326,7 +326,8 @@ if __name__ == "__main__":
         print("🔹 Updating historical data ...")
         update_history()
     elif args.mode == "latest":
-        print("🔹 Updating latest data ...")
+        vn_tz = timezone(timedelta(hours=7))
+        print("🔹 Updating latest data ... at ", datetime.now(tz=vn_tz))
         update_latest()
     elif args.mode == "auto":
         print("🕒 Auto mode started (daily 17:00 VN time)")
