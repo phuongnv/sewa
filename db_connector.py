@@ -52,8 +52,13 @@ def setup_tables(conn):
             CREATE TABLE IF NOT EXISTS stock_info (
                 symbol VARCHAR(10) PRIMARY KEY,
                 tradingview VARCHAR(50) NOT NULL,
-                last_updated TIMESTAMP WITHOUT TIME ZONE NOT NULL
+                last_updated TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                margin INTEGER NOT NULL DEFAULT 0
             );
+        """)
+        cur.execute("""
+            ALTER TABLE stock_info
+            ADD COLUMN IF NOT EXISTS margin INTEGER NOT NULL DEFAULT 0;
         """)
         
         # 2. Bảng lưu trữ dữ liệu giá (thay thế yfinance)
@@ -124,6 +129,24 @@ def fetch_all_recommendations(conn) -> pd.DataFrame:
         st.error(f"Lỗi khi lấy dữ liệu khuyến nghị DB: {e}")
         return pd.DataFrame()
 
+def fetch_symbols_by_margin(conn, margin_value: int = 1) -> list:
+    """Lấy danh sách symbol có margin bằng margin_value."""
+    if not conn:
+        return []
+    try:
+        query = """
+            SELECT symbol
+            FROM stock_info
+            WHERE margin = %s
+            ORDER BY symbol ASC;
+        """
+        df = pd.read_sql(query, conn, params=(margin_value,))
+        if df.empty:
+            return []
+        return df['symbol'].tolist()
+    except Exception as e:
+        st.error(f"Lỗi khi lấy danh sách symbol theo margin: {e}")
+        return []
 # =====================
 # CHỨC NĂNG DỮ LIỆU GIÁ (RRG)
 # =====================
