@@ -8,17 +8,21 @@ from datetime import datetime
 # CẤU HÌNH VÀ KẾT NỐI DB
 # =====================
 
-def get_db_connection():
-    """
-    Thiết lập và trả về kết nối PostgreSQL.
-    Sử dụng các biến môi trường để lấy chuỗi kết nối.
-    """
-    # Trong môi trường Canvas/Cloud, chuỗi kết nối thường được cung cấp qua
-    # biến môi trường hoặc cấu hình bí mật. Ở đây ta giả lập một biến môi trường.
-    # Vui lòng thay thế 'YOUR_NEON_POSTGRES_URL' bằng biến thực tế.
-    
-    # Giả định biến môi trường chứa chuỗi kết nối
-    # Ví dụ: os.environ.get("DATABASE_URL")
+def _is_connection_closed(conn):
+    """Kiểm tra xem kết nối có bị đóng hay không."""
+    if conn is None:
+        return True
+    try:
+        # Kiểm tra trạng thái kết nối bằng cách thử thực hiện một truy vấn đơn giản
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        return False
+    except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.ProgrammingError):
+        return True
+
+def _create_new_connection():
+    """Tạo kết nối mới đến database."""
     DB_URL = os.environ.get("DATABASE_URL") 
     
     if not DB_URL:
@@ -26,20 +30,51 @@ def get_db_connection():
         return None
     
     try:
-        # Sử dụng st.cache_resource để chỉ kết nối một lần
-        @st.cache_resource
-        def connect_db(url):
-            return psycopg2.connect(url)
-        
-        conn = connect_db(DB_URL)
-        return conn
-    
+        return psycopg2.connect(DB_URL)
     except Exception as e:
         st.error(f"Lỗi kết nối PostgreSQL: {e}")
         return None
 
+def get_db_connection():
+    """
+    Thiết lập và trả về kết nối PostgreSQL.
+    Sử dụng các biến môi trường để lấy chuỗi kết nối.
+    Tự động reconnect nếu kết nối bị đóng.
+    """
+    # Sử dụng st.cache_resource để chỉ kết nối một lần
+    @st.cache_resource
+    def connect_db():
+        return _create_new_connection()
+    
+    conn = connect_db()
+    
+    # Kiểm tra và reconnect nếu cần
+    if conn and _is_connection_closed(conn):
+        # Xóa cache và tạo kết nối mới
+        try:
+            connect_db.clear()
+        except Exception:
+            pass  # Ignore errors when clearing cache
+        conn = connect_db()
+    
+    return conn
+
+def ensure_connection(conn):
+    """
+    Đảm bảo kết nối còn hoạt động, reconnect nếu cần.
+    Trả về kết nối hợp lệ.
+    """
+    if _is_connection_closed(conn):
+        return get_db_connection()
+    return conn
+
 def setup_tables(conn):
     """Tạo các bảng cần thiết nếu chúng chưa tồn tại."""
+    if not conn:
+        return
+    
+    # Đảm bảo kết nối còn hoạt động
+    conn = ensure_connection(conn)
     if not conn:
         return
     
@@ -51,7 +86,7 @@ def setup_tables(conn):
         cur.execute("""
             CREATE TABLE IF NOT EXISTS stock_info (
                 symbol VARCHAR(10) PRIMARY KEY,
-                tradingview VARCHAR(50) NOT NULL,
+                recommend VARCHAR(50) NOT NULL,
                 last_updated TIMESTAMP WITHOUT TIME ZONE NOT NULL,
                 margin INTEGER NOT NULL DEFAULT 0
             );
@@ -85,6 +120,11 @@ def update_stock_recommendations(conn, recommendations: dict):
     if not conn:
         return 0
     
+    # Đảm bảo kết nối còn hoạt động
+    conn = ensure_connection(conn)
+    if not conn:
+        return 0
+    
     try:
         cur = conn.cursor()
         
@@ -95,13 +135,13 @@ def update_stock_recommendations(conn, recommendations: dict):
             # Sử dụng ON CONFLICT (UPSERT) để cập nhật nếu đã tồn tại, hoặc chèn mới
             cur.execute(
                 """
-                INSERT INTO stock_info (symbol, tradingview, last_updated)
+                INSERT INTO stock_info (symbol, recommend, last_updated)
                 VALUES (%s, %s, %s)
                 ON CONFLICT (symbol) DO UPDATE
-                SET tradingview = EXCLUDED.tradingview,
+                SET recommend = EXCLUDED.recommend,
                     last_updated = EXCLUDED.last_updated;
                 """,
-                (symbol, data['tradingview'], current_time)
+                (symbol, data['recommend'], current_time)
             )
             success_count += 1
 
@@ -118,8 +158,13 @@ def fetch_all_recommendations(conn) -> pd.DataFrame:
     if not conn:
         return pd.DataFrame()
     
+    # Đảm bảo kết nối còn hoạt động
+    conn = ensure_connection(conn)
+    if not conn:
+        return pd.DataFrame()
+    
     try:
-        query = "SELECT symbol AS \"Mã CK\", tradingview AS \"Trạng thái (TradingView)\", last_updated AS \"Cập nhật cuối\" FROM stock_info ORDER BY symbol ASC;"
+        query = "SELECT symbol AS \"Mã CK\", RECOMMEND AS \"Trạng thái (Recommend)\", last_updated AS \"Cập nhật cuối\" FROM stock_info ORDER BY symbol ASC;"
         df = pd.read_sql(query, conn)
         # Chuyển đổi timestamp sang string cho hiển thị
         df['Cập nhật cuối'] = df['Cập nhật cuối'].dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -129,15 +174,21 @@ def fetch_all_recommendations(conn) -> pd.DataFrame:
         st.error(f"Lỗi khi lấy dữ liệu khuyến nghị DB: {e}")
         return pd.DataFrame()
 
-def fetch_symbols_by_margin(conn, margin_value: int = 1) -> list:
+def fetch_symbols_by_margin(conn, margin_value: int = 40) -> list:
     """Lấy danh sách symbol có margin bằng margin_value."""
     if not conn:
         return []
+    
+    # Đảm bảo kết nối còn hoạt động
+    conn = ensure_connection(conn)
+    if not conn:
+        return []
+    
     try:
         query = """
             SELECT symbol
             FROM stock_info
-            WHERE margin = %s
+            WHERE margin >= %s
             ORDER BY symbol ASC;
         """
         df = pd.read_sql(query, conn, params=(margin_value,))
@@ -159,6 +210,11 @@ def fetch_price_data(conn, symbols: list, start_date: str, end_date: str) -> pd.
     if not conn:
         return pd.DataFrame()
 
+    # Đảm bảo kết nối còn hoạt động
+    conn = ensure_connection(conn)
+    if not conn:
+        return pd.DataFrame()
+
     try:
         # Chuẩn bị danh sách mã để đưa vào truy vấn SQL (tránh SQL Injection)
         symbol_list = tuple(symbols)
@@ -169,8 +225,8 @@ def fetch_price_data(conn, symbols: list, start_date: str, end_date: str) -> pd.
 
         # Lấy dữ liệu giá
         query = f"""
-            SELECT date, symbol, adj_close
-            FROM price_data
+            SELECT symbol, date, close
+            FROM stock_prices
             WHERE symbol IN %s AND date BETWEEN %s AND %s
             ORDER BY date, symbol;
         """
@@ -181,10 +237,10 @@ def fetch_price_data(conn, symbols: list, start_date: str, end_date: str) -> pd.
             return pd.DataFrame()
 
         # Chuyển đổi từ định dạng dài (long) sang định dạng rộng (wide)
-        price_df = df.pivot(index='date', columns='symbol', values='adj_close')
-        price_df.index = pd.to_datetime(price_df.index)
-        
-        return price_df
+        # price_df = df.pivot(index='date', columns='symbol', values='close')
+        # price_df.index = pd.to_datetime(price_df.index)
+        df["date"] = pd.to_datetime(df["date"])
+        return df
         
     except Exception as e:
         st.error(f"Lỗi khi lấy dữ liệu giá DB: {e}")

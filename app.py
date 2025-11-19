@@ -1,7 +1,7 @@
 import streamlit as st
 import db_connector
 from page.generate_charts import render as render_generate_charts
-from page.margin_manager import render as render_margin_manager
+from page.filter_manager import render as render_filter_manager
 
 
 def initialize_app_services():
@@ -38,7 +38,7 @@ def main():
 
     pages = {
         "Generate charts": lambda: render_generate_charts(conn),
-        "Margin manager": lambda: render_margin_manager(conn),
+        "Filter manager": lambda: render_filter_manager(conn),
     }
 
     render_header_navigation(pages)

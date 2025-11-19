@@ -1,2 +1,2 @@
-SELECT * from stock_prices where symbol = 'PDR'
-ORDER BY date DESC;
+SELECT * from stock_info where symbol = 'FPT'
+ORDER BY symbol;
