@@ -329,6 +329,16 @@ def main():
                                 max_value=date_to - timedelta(days=1),
                                 help=f"Hệ thống sẽ lấy dữ liệu từ ngày {min_start_date_needed.strftime('%Y-%m-%d')} để đảm bảo tính toán đủ 50 ngày WMA."
                             )
+        
+        # NEW: Limit number of last points to draw on RRG Time Series chart
+        limit_points = st.slider(
+            "Số điểm cuối cùng để vẽ (last N points)",
+            min_value=5,
+            max_value=DAYS_FOR_CHART,
+            value=min(20, DAYS_FOR_CHART),
+            step=1,
+            help="Giới hạn số điểm gần nhất để vẽ trên biểu đồ RRG Time Series."
+        )
 
     # --- Main App Logic ---
     if not selected_symbol:
@@ -371,6 +381,22 @@ def main():
     if rrg_df.empty:
         st.warning("Dữ liệu sau khi tính RRG không còn điểm nào trong khoảng ngày bạn chọn.")
         return
+    
+    # APPLY LIMIT: keep only last `limit_points` per symbol (show recent points only)
+    try:
+        limit_points = int(limit_points)
+        if limit_points <= 0:
+            limit_points = min(20, DAYS_FOR_CHART)
+    except Exception:
+        limit_points = min(20, DAYS_FOR_CHART)
+
+    # Keep the last N rows per symbol sorted by date
+    rrg_df = (
+        rrg_df.sort_values(['symbol', 'date'])
+              .groupby('symbol', group_keys=False)
+              .apply(lambda g: g.tail(limit_points))
+              .reset_index(drop=True)
+    )
         
     # Vẽ biểu đồ
     plot_rrg_time_series(rrg_df, selected_symbol, BENCHMARK_SYMBOL, RRG_PERIOD)
