@@ -183,6 +183,51 @@ def fetch_symbols_by_margin(conn, margin_value: int = 40) -> list:
     conn = ensure_connection(conn)
     if not conn:
         return []
+
+def fetch_symbols_by_filters(
+    conn,
+    use_margin: bool = False,
+    margin_value: int = 1,
+    use_recommend: bool = False,
+    recommend_value: str = "1",
+) -> list:
+    """Lấy danh sách symbol theo các bộ lọc margin và recommend."""
+    if not conn:
+        return []
+
+    conn = ensure_connection(conn)
+    if not conn:
+        return []
+
+    try:
+        query = "SELECT symbol FROM stock_info"
+        conditions = []
+        params = []
+
+        if use_margin:
+            conditions.append("margin >= %s")
+            params.append(margin_value)
+
+        if use_recommend:
+            conditions.append("recommend = %s")
+            params.append(recommend_value)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        query += " ORDER BY symbol ASC;"
+
+        if params:
+            df = pd.read_sql(query, conn, params=tuple(params))
+        else:
+            df = pd.read_sql(query, conn)
+
+        if df.empty:
+            return []
+        return df["symbol"].tolist()
+    except Exception as e:
+        st.error(f"Lỗi khi lọc danh sách symbol: {e}")
+        return []
     
     try:
         query = """

@@ -130,17 +130,24 @@ def calculate_rrg_data_2(df: pd.DataFrame, benchmark_symbol: str, period: int, s
     rs_momentum_wide = (rs_ratio_wide / wma_rs_ratio) * 100
 
     # 2. Chuyển kết quả về dạng dài (Long format)
-    rrg_results_long = pd.DataFrame(index=rs_ratio_wide.index)
-    
+    rrg_results = []
     for symbol in rs_ratio_wide.columns:
-        if symbol != benchmark_symbol:
-            temp_df = pd.DataFrame({
-                'date': rs_ratio_wide.index,
-                'symbol': symbol,
-                'rs_ratio': rs_ratio_wide[symbol].values,
-                'rs_momentum': rs_momentum_wide[symbol].values
-            })
-            rrg_results_long = pd.concat([rrg_results_long, temp_df])
+        if symbol == benchmark_symbol:
+            continue
+        temp_df = pd.DataFrame(
+            {
+                "date": rs_ratio_wide.index,
+                "symbol": symbol,
+                "rs_ratio": rs_ratio_wide[symbol].values,
+                "rs_momentum": rs_momentum_wide[symbol].values,
+            }
+        )
+        rrg_results.append(temp_df)
+
+    if not rrg_results:
+        return pd.DataFrame()
+
+    rrg_results_long = pd.concat(rrg_results, ignore_index=True)
 
     # 3. CHUẨN HÓA VÀ DỊCH CHUYỂN TÂM 100
     rrg_results_long['rs_ratio_z'] = normalize_data(rrg_results_long['rs_ratio'])
@@ -275,11 +282,49 @@ def render(conn):
             max_value=today,
         )
 
-    margin_symbols = db_connector.fetch_symbols_by_margin(conn, margin_value=1)
-    if margin_symbols:
-        st.info(f"Hiện có **{len(margin_symbols)}** mã được gắn cờ margin = 1.")
+    st.subheader("Symbol filters")
+    filter_margin = st.checkbox("Filter theo Margin (>= giá trị)", value=True)
+    if filter_margin:
+        margin_threshold = st.number_input(
+            "Giá trị margin tối thiểu",
+            min_value=0,
+            max_value=100,
+            value=1,
+            step=1,
+            help="Chỉ lấy các mã có margin lớn hơn hoặc bằng giá trị này.",
+        )
     else:
-        st.warning("Chưa có mã nào được gắn margin = 1.")
+        margin_threshold = 0
+
+    filter_recommend = st.checkbox("Filter theo Recommend", value=False)
+    if filter_recommend:
+        recommend_value = st.selectbox(
+            "Giá trị recommend cần lấy",
+            options=["1", "0"],
+            index=0,
+            help="Chỉ lấy các mã có recommend đúng bằng giá trị này.",
+        )
+    else:
+        recommend_value = "1"
+
+    margin_symbols = db_connector.fetch_symbols_by_filters(
+        conn,
+        use_margin=filter_margin,
+        margin_value=margin_threshold,
+        use_recommend=filter_recommend,
+        recommend_value=recommend_value,
+    )
+
+    if margin_symbols:
+        active_filters = []
+        if filter_margin:
+            active_filters.append(f"margin ≥ {margin_threshold}")
+        if filter_recommend:
+            active_filters.append(f"recommend = {recommend_value}")
+        filter_text = ", ".join(active_filters) if active_filters else "Không áp dụng bộ lọc"
+        st.info(f"Đang áp dụng bộ lọc: {filter_text}. Tìm thấy **{len(margin_symbols)}** mã.")
+    else:
+        st.warning("Không tìm thấy mã nào theo bộ lọc đã chọn.")
 
     charts_per_line = st.number_input(
         "Số biểu đồ mỗi dòng",
