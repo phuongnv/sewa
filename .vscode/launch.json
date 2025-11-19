@@ -5,16 +5,34 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug Streamlit App",
+            "name": "Debug Streamlit gemini App",
             "type": "python",
             "request": "launch",
             "program": "-m",
             "args": [
                 "streamlit",
                 "run",
-                "rrg_app_deep.py",
+                "rrg_app_gemini.py",
                 "--server.port",
                 "8501"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Streamlit App",
+            "type": "python",
+            "request": "launch",
+            "program": "-m",
+            "args": [
+                "streamlit",
+                "run",
+                "app.py",
+                "--server.port",
+                "8502"
             ],
             "console": "integratedTerminal",
             "justMyCode": false,
