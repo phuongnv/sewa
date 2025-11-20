@@ -64,7 +64,7 @@ API_PAYLOAD = {
     ],
     "filter": [
         {"left": "AnalystRating", "operation": "in_range", "right": ["StrongBuy", "Buy"]},
-        {"left": "average_volume_10d_calc", "operation": "greater", "right": 1_000_000},
+        {"left": "average_volume_10d_calc", "operation": "greater", "right": 500000},
         {"left": "is_primary", "operation": "equal", "right": True},
     ],
     "ignore_unknown_fields": False,
