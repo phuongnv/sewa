@@ -12,82 +12,6 @@ DAYS_FOR_CHART = 365
 SCALE_FACTOR = 4.0
 
 
-def calculate_rrg_data(price_df: pd.DataFrame, benchmark_symbol: str, period: int, scale_factor: float) -> pd.DataFrame:
-    """Tính toán RRG dựa trên thuật toán trong rrg_app_gemini."""
-    if price_df.empty or benchmark_symbol not in price_df.columns:
-        return pd.DataFrame()
-
-    df = price_df.copy()
-    symbols = [col for col in df.columns if col != benchmark_symbol]
-    results = []
-
-    for symbol in symbols:
-        rs_ratio = df[symbol] / df[benchmark_symbol]
-        rs_ratio_wma = rs_ratio.ewm(span=period, adjust=False).mean()
-        rs_momentum = rs_ratio_wma.pct_change(periods=period)
-
-        rs_ratio_std = rs_ratio_wma.std()
-        rs_momentum_std = rs_momentum.std()
-
-        if rs_ratio_std == 0 or rs_momentum_std == 0:
-            continue
-
-        rs_ratio_z = (rs_ratio_wma - rs_ratio_wma.mean()) / rs_ratio_std
-        rs_momentum_z = (rs_momentum - rs_momentum.mean()) / rs_momentum_std
-
-        temp_df = pd.DataFrame(
-            {
-                "date": df.index,
-                "symbol": symbol,
-                "rs_ratio_scaled": 100 + rs_ratio_z * scale_factor,
-                "rs_momentum_scaled": 100 + rs_momentum_z * scale_factor,
-            }
-        ).dropna()
-
-        results.append(temp_df)
-
-    if not results:
-        return pd.DataFrame()
-
-    return pd.concat(results, ignore_index=True)
-
-
-def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, period: int):
-    """Vẽ biểu đồ RRG giống phiên bản trong rrg_app_gemini."""
-    df_symbol = rrg_df[rrg_df["symbol"] == symbol].copy().reset_index(drop=True)
-    if df_symbol.empty:
-        st.warning(f"Không có dữ liệu RRG cho {symbol}.")
-        return
-
-    rs = df_symbol["rs_ratio_scaled"]
-    rm = df_symbol["rs_momentum_scaled"]
-    if rs.empty or rm.empty:
-        st.warning(f"Dữ liệu RRG không đủ để vẽ biểu đồ cho {symbol}.")
-        return
-
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.axhline(100, color="gray", linestyle="--", linewidth=0.8)
-    ax.axvline(100, color="gray", linestyle="--", linewidth=0.8)
-
-    min_val = min(rs.min(), rm.min(), 98)
-    max_val = max(rs.max(), rm.max(), 102)
-    padding = max((max_val - min_val) * 0.1, 1)
-    ax.set_xlim(min_val - padding, max_val + padding)
-    ax.set_ylim(min_val - padding, max_val + padding)
-
-    ax.plot(rs, rm, color="#1f77b4", linewidth=2, alpha=0.8)
-    ax.scatter(rs.iloc[0], rm.iloc[0], color="#1f77b4", s=80, alpha=0.7, marker="o")
-    ax.scatter(rs.iloc[-1], rm.iloc[-1], color="black", s=120, marker=">", zorder=5)
-    ax.text(rs.iloc[-1], rm.iloc[-1], symbol, fontsize=12, ha="left", va="bottom")
-
-    ax.set_title(f"RRG Time Series: {symbol} vs {benchmark} (P={period})", fontsize=13)
-    ax.set_xlabel("Relative Strength (RS Ratio)")
-    ax.set_ylabel("Relative Momentum (RM Momentum)")
-    ax.grid(True, linestyle=":", alpha=0.4)
-    ax.set_aspect("equal", adjustable="box")
-
-    st.pyplot(fig)
-
 
 def normalize_data(data: pd.Series) -> pd.Series:
     """Chuẩn hóa Z-Score cho một Series."""
@@ -106,7 +30,7 @@ def wma_func(x: pd.Series, period: int) -> float:
     return np.sum(x.values[-len(weights):] * weights) / np.sum(weights)
 
 # @st.cache_data
-def calculate_rrg_data_2(df: pd.DataFrame, benchmark_symbol: str, period: int, scale_factor: float) -> pd.DataFrame:
+def calculate_rrg_data(df: pd.DataFrame, benchmark_symbol: str, period: int, scale_factor: float) -> pd.DataFrame:
     """
     Tính toán chỉ số RRG (RS-Ratio và RS-Momentum) bằng WMA, 
     Chuẩn hóa Z-Score, và Dịch chuyển về tâm 100.
@@ -174,7 +98,7 @@ def calculate_rrg_data_2(df: pd.DataFrame, benchmark_symbol: str, period: int, s
 # RRG Chart Plotting
 # =====================
 
-def plot_rrg_time_series_2(rrg_df: pd.DataFrame, symbol: str, benchmark: str, period: int):
+def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, period: int):
     """Vẽ biểu đồ RRG Time Series (Tâm 100)."""
     if rrg_df.empty:
         st.info("Không có dữ liệu RRG để vẽ biểu đồ.")
@@ -364,7 +288,7 @@ def render(conn):
                 #     symbol_data[symbol] = None
                 #     continue
 
-                rrg_df = calculate_rrg_data_2(price_df, BENCHMARK_SYMBOL, RRG_PERIOD, SCALE_FACTOR)
+                rrg_df = calculate_rrg_data(price_df, BENCHMARK_SYMBOL, RRG_PERIOD, SCALE_FACTOR)
                 if rrg_df.empty:
                     symbol_data[symbol] = None
                     continue
@@ -380,7 +304,7 @@ def render(conn):
                     if symbol_data.get(symbol) is None:
                         st.warning(f"Không có dữ liệu cho {symbol}.")
                     else:
-                        plot_rrg_time_series_2(symbol_data[symbol], symbol, BENCHMARK_SYMBOL, RRG_PERIOD)
+                        plot_rrg_time_series(symbol_data[symbol], symbol, BENCHMARK_SYMBOL, RRG_PERIOD)
                         
 
 
