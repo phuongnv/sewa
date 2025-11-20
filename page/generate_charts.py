@@ -12,6 +12,12 @@ DAYS_FOR_CHART = 30
 SCALE_FACTOR = 4.0
 CUSTOM_SYMBOL_HISTORY_DAYS = 365
 
+RRG_FILTER_OPTIONS = {
+    "none": "Không áp dụng",
+    "rs_gt_100": "RS-Ratio > 100 (giá trị mới nhất)",
+    "avg_up": "Trung bình 3 ngày gần nhất tăng so với 3 ngày trước",
+}
+
 
 
 def normalize_data(data: pd.Series) -> pd.Series:
@@ -136,6 +142,68 @@ def fetch_rrg_data_from_db(conn, symbols: list[str], start_date: str, end_date: 
     except Exception as e:
         st.error(f"Lỗi khi lấy dữ liệu RRG từ DB: {e}")
         return pd.DataFrame()
+
+
+def filter_symbols_by_rrg_condition(conn, symbols: list[str], end_date, condition: str) -> list[str]:
+    """Filter symbols based on stored RRG data conditions."""
+    if condition == "none" or not symbols:
+        return symbols
+
+    conn = db_connector.ensure_connection(conn)
+    if not conn:
+        return symbols
+
+    try:
+        symbol_array = symbols
+
+        if condition == "rs_gt_100":
+            query = """
+                WITH latest AS (
+                    SELECT symbol, rs_ratio_scaled, date,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+                    FROM rrg_data
+                    WHERE symbol = ANY(%s) AND date <= %s
+                )
+                SELECT symbol
+                FROM latest
+                WHERE rn = 1 AND rs_ratio_scaled > 100;
+            """
+            df = pd.read_sql(query, conn, params=(symbol_array, end_date))
+            if df.empty:
+                return []
+            return df["symbol"].tolist()
+
+        if condition == "avg_up":
+            query = """
+                WITH ranked AS (
+                    SELECT symbol, rs_ratio_scaled, date,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+                    FROM rrg_data
+                    WHERE symbol = ANY(%s) AND date <= %s
+                )
+                SELECT symbol, rs_ratio_scaled, rn
+                FROM ranked
+                WHERE rn <= 6
+                ORDER BY symbol, rn;
+            """
+            df = pd.read_sql(query, conn, params=(symbol_array, end_date))
+            if df.empty:
+                return []
+
+            valid_symbols = []
+            for symbol, group in df.groupby("symbol"):
+                recent = group[group["rn"] <= 3]["rs_ratio_scaled"]
+                previous = group[(group["rn"] > 3) & (group["rn"] <= 6)]["rs_ratio_scaled"]
+                if len(recent) == 3 and len(previous) == 3:
+                    if recent.mean() > previous.mean():
+                        valid_symbols.append(symbol)
+            return valid_symbols
+
+        return symbols
+
+    except Exception as e:
+        st.error(f"Lỗi khi áp dụng bộ lọc RRG: {e}")
+        return symbols
 
 
 def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, period: int):
@@ -285,6 +353,14 @@ def render(conn):
         else:
             recommend_value = "1"
 
+        rrg_filter_option = st.selectbox(
+            "Bộ lọc bổ sung theo dữ liệu RRG (từ DB)",
+            options=list(RRG_FILTER_OPTIONS.keys()),
+            index=0,
+            format_func=lambda key: RRG_FILTER_OPTIONS[key],
+            help="Áp dụng thêm điều kiện dựa trên dữ liệu đã lưu trong bảng rrg_data.",
+        )
+
         margin_symbols = db_connector.fetch_symbols_by_filters(
             conn,
             use_margin=filter_margin,
@@ -292,7 +368,15 @@ def render(conn):
             use_recommend=filter_recommend,
             recommend_value=recommend_value,
         )
+
+        if margin_symbols and rrg_filter_option != "none":
+            filtered_symbols = filter_symbols_by_rrg_condition(conn, margin_symbols, end_date, rrg_filter_option)
+            removed = len(margin_symbols) - len(filtered_symbols)
+            margin_symbols = filtered_symbols
+            if removed > 0:
+                st.info(f"Đã loại {removed} mã không đạt bộ lọc RRG ({RRG_FILTER_OPTIONS[rrg_filter_option]}).")
     else:
+        rrg_filter_option = "none"
         # Parse custom symbols
         margin_symbols = [s.strip().upper() for s in symbol_filter_input.split(",") if s.strip()]
         filter_margin = False
@@ -304,6 +388,8 @@ def render(conn):
             active_filters.append(f"margin ≥ {margin_threshold}")
         if filter_recommend:
             active_filters.append(f"recommend = {recommend_value}")
+        if rrg_filter_option != "none":
+            active_filters.append(RRG_FILTER_OPTIONS[rrg_filter_option])
         filter_text = ", ".join(active_filters) if active_filters else "Không áp dụng bộ lọc"
         st.info(f"Đang áp dụng bộ lọc: {filter_text}. Tìm thấy **{len(margin_symbols)}** mã.")
     else:
