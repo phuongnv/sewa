@@ -8,8 +8,9 @@ import db_connector
 
 BENCHMARK_SYMBOL = "VNINDEX"
 RRG_PERIOD = 50
-DAYS_FOR_CHART = 365
+DAYS_FOR_CHART = 30
 SCALE_FACTOR = 4.0
+CUSTOM_SYMBOL_HISTORY_DAYS = 365
 
 
 
@@ -97,6 +98,45 @@ def calculate_rrg_data(df: pd.DataFrame, benchmark_symbol: str, period: int, sca
 # =====================
 # RRG Chart Plotting
 # =====================
+
+def fetch_rrg_data_from_db(conn, symbols: list[str], start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetch RRG data from rrg_data table."""
+    if not conn or not symbols:
+        return pd.DataFrame()
+
+    conn = db_connector.ensure_connection(conn)
+    if not conn:
+        return pd.DataFrame()
+
+    try:
+        symbol_list = tuple(symbols)
+        if len(symbols) == 1:
+            symbol_list = (symbols[0],)
+
+        query = """
+            SELECT symbol, date, rs_ratio_scaled, rs_momentum_scaled, close
+            FROM rrg_data
+            WHERE symbol IN %s AND date BETWEEN %s AND %s
+            ORDER BY date, symbol;
+        """
+
+        df = pd.read_sql(query, conn, params=(symbol_list, start_date, end_date))
+
+        if df.empty:
+            return pd.DataFrame()
+
+        df["date"] = pd.to_datetime(df["date"])
+        # Rename columns to match expected format
+        df = df.rename(columns={
+            'rs_ratio_scaled': 'rs_ratio_scaled',
+            'rs_momentum_scaled': 'rs_momentum_scaled'
+        })
+        return df
+
+    except Exception as e:
+        st.error(f"Lỗi khi lấy dữ liệu RRG từ DB: {e}")
+        return pd.DataFrame()
+
 
 def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, period: int):
     """Vẽ biểu đồ RRG Time Series (Tâm 100)."""
@@ -210,37 +250,53 @@ def render(conn):
         )
 
     st.subheader("Symbol filters")
-    filter_margin = st.checkbox("Filter theo Margin (>= giá trị)", value=True)
-    if filter_margin:
-        margin_threshold = st.number_input(
-            "Giá trị margin tối thiểu",
-            min_value=0,
-            max_value=100,
-            value=1,
-            step=1,
-            help="Chỉ lấy các mã có margin lớn hơn hoặc bằng giá trị này.",
-        )
-    else:
-        margin_threshold = 0
-
-    filter_recommend = st.checkbox("Filter theo Recommend", value=False)
-    if filter_recommend:
-        recommend_value = st.selectbox(
-            "Giá trị recommend cần lấy",
-            options=["1", "0"],
-            index=0,
-            help="Chỉ lấy các mã có recommend đúng bằng giá trị này.",
-        )
-    else:
-        recommend_value = "1"
-
-    margin_symbols = db_connector.fetch_symbols_by_filters(
-        conn,
-        use_margin=filter_margin,
-        margin_value=margin_threshold,
-        use_recommend=filter_recommend,
-        recommend_value=recommend_value,
+    
+    # Add symbol text input filter
+    symbol_filter_input = st.text_input(
+        "Danh sách mã cần vẽ biểu đồ (tùy chọn)",
+        value="",
+        help="Nhập các mã phân cách bằng dấu phẩy (ví dụ: ACB,VCB,TCB). Để trống để sử dụng bộ lọc margin/recommend.",
     )
+    
+    use_custom_symbols = bool(symbol_filter_input and symbol_filter_input.strip())
+    
+    if not use_custom_symbols:
+        filter_margin = st.checkbox("Filter theo Margin (>= giá trị)", value=True)
+        if filter_margin:
+            margin_threshold = st.number_input(
+                "Giá trị margin tối thiểu",
+                min_value=0,
+                max_value=100,
+                value=40,
+                step=1,
+                help="Chỉ lấy các mã có margin lớn hơn hoặc bằng giá trị này.",
+            )
+        else:
+            margin_threshold = 0
+
+        filter_recommend = st.checkbox("Filter theo Recommend", value=False)
+        if filter_recommend:
+            recommend_value = st.selectbox(
+                "Giá trị recommend cần lấy",
+                options=["1", "0"],
+                index=0,
+                help="Chỉ lấy các mã có recommend đúng bằng giá trị này.",
+            )
+        else:
+            recommend_value = "1"
+
+        margin_symbols = db_connector.fetch_symbols_by_filters(
+            conn,
+            use_margin=filter_margin,
+            margin_value=margin_threshold,
+            use_recommend=filter_recommend,
+            recommend_value=recommend_value,
+        )
+    else:
+        # Parse custom symbols
+        margin_symbols = [s.strip().upper() for s in symbol_filter_input.split(",") if s.strip()]
+        filter_margin = False
+        filter_recommend = False
 
     if margin_symbols:
         active_filters = []
@@ -257,7 +313,7 @@ def render(conn):
         "Số biểu đồ mỗi dòng",
         min_value=1,
         max_value=6,
-        value=3,
+        value=5,
         help="Chọn số lượng biểu đồ hiển thị trên mỗi dòng (1-6)."
     )
 
@@ -281,19 +337,55 @@ def render(conn):
 
         # Process all symbols and prepare data
         symbol_data = {}
-        with st.spinner("Đang tải dữ liệu cho tất cả các mã..."):
-            for symbol in margin_symbols:
-                price_df = db_connector.fetch_price_data(conn, [symbol, BENCHMARK_SYMBOL], str_start, str_end)
-                # if price_df.empty or symbol not in price_df.columns:
-                #     symbol_data[symbol] = None
-                #     continue
+        with st.spinner("Đang tải dữ liệu RRG..."):
+            if use_custom_symbols:
+                # Always recalculate using fresh 365-day price data
+                calc_start_date = end_date - timedelta(days=CUSTOM_SYMBOL_HISTORY_DAYS)
+                str_calc_start = calc_start_date.strftime("%Y-%m-%d")
+                for symbol in margin_symbols:
+                    price_df = db_connector.fetch_price_data(conn, [symbol, BENCHMARK_SYMBOL], str_calc_start, str_end)
+                    if price_df.empty:
+                        symbol_data[symbol] = None
+                        continue
 
-                rrg_df = calculate_rrg_data(price_df, BENCHMARK_SYMBOL, RRG_PERIOD, SCALE_FACTOR)
-                if rrg_df.empty:
-                    symbol_data[symbol] = None
-                    continue
+                    rrg_df = calculate_rrg_data(price_df, BENCHMARK_SYMBOL, RRG_PERIOD, SCALE_FACTOR)
+                    if rrg_df.empty:
+                        symbol_data[symbol] = None
+                        continue
 
-                symbol_data[symbol] = rrg_df
+                    rrg_df["date"] = pd.to_datetime(rrg_df["date"])
+                    rrg_filtered = rrg_df[
+                        (rrg_df["date"] >= pd.to_datetime(str_start)) & (rrg_df["date"] <= pd.to_datetime(str_end))
+                    ]
+                    if rrg_filtered.empty:
+                        symbol_data[symbol] = None
+                    else:
+                        symbol_data[symbol] = rrg_filtered
+            else:
+                # Fetch from DB, fallback to calculation if missing
+                rrg_df_db = fetch_rrg_data_from_db(conn, margin_symbols, str_start, str_end)
+                
+                if not rrg_df_db.empty:
+                    for symbol in margin_symbols:
+                        symbol_rrg = rrg_df_db[rrg_df_db['symbol'] == symbol]
+                        if not symbol_rrg.empty:
+                            symbol_data[symbol] = symbol_rrg
+                        else:
+                            symbol_data[symbol] = None
+                else:
+                    st.info("Không tìm thấy dữ liệu RRG trong database. Đang tính toán trực tiếp...")
+                    for symbol in margin_symbols:
+                        price_df = db_connector.fetch_price_data(conn, [symbol, BENCHMARK_SYMBOL], str_start, str_end)
+                        if price_df.empty:
+                            symbol_data[symbol] = None
+                            continue
+
+                        rrg_df = calculate_rrg_data(price_df, BENCHMARK_SYMBOL, RRG_PERIOD, SCALE_FACTOR)
+                        if rrg_df.empty:
+                            symbol_data[symbol] = None
+                            continue
+
+                        symbol_data[symbol] = rrg_df
 
         # Display charts in rows based on charts_per_line setting
         for row_symbols in chunk_list(margin_symbols, charts_per_line):

@@ -1,9 +1,11 @@
 import requests
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
+import numpy as np
+from datetime import datetime, date, timedelta
 
 import db_connector
+from page.generate_charts import calculate_rrg_data, BENCHMARK_SYMBOL, RRG_PERIOD, SCALE_FACTOR
 
 API_URL = "https://scanner.tradingview.com/vietnam/scan?label-product=screener-stock"
 API_HEADERS = {"Content-Type": "application/json"}
@@ -318,6 +320,51 @@ def update_margin_column(conn, symbol_margin_map: dict[str, float]):
         return False
 
 
+def save_rrg_data_to_db(conn, rrg_df: pd.DataFrame):
+    """Save RRG data to rrg_data table."""
+    if not conn or rrg_df.empty:
+        return False
+
+    conn = db_connector.ensure_connection(conn)
+    if not conn:
+        return False
+
+    try:
+        cur = conn.cursor()
+        now = datetime.now()
+
+        # Filter only rows with valid RRG data
+        rrg_df = rrg_df.dropna(subset=['rs_ratio_scaled', 'rs_momentum_scaled'])
+
+        for _, row in rrg_df.iterrows():
+            cur.execute(
+                """
+                INSERT INTO rrg_data (symbol, date, rs_ratio_scaled, rs_momentum_scaled, close, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (symbol, date) DO UPDATE
+                SET rs_ratio_scaled = EXCLUDED.rs_ratio_scaled,
+                    rs_momentum_scaled = EXCLUDED.rs_momentum_scaled,
+                    close = EXCLUDED.close,
+                    updated_at = EXCLUDED.updated_at;
+                """,
+                (
+                    row['symbol'],
+                    row['date'],
+                    float(row['rs_ratio_scaled']),
+                    float(row['rs_momentum_scaled']),
+                    float(row['close']) if pd.notna(row.get('close')) else None,
+                    now,
+                ),
+            )
+
+        conn.commit()
+        return True
+    except Exception as exc:
+        conn.rollback()
+        st.error(f"Lỗi khi lưu dữ liệu RRG: {exc}")
+        return False
+
+
 def render(conn):
     st.header("Filter manager")
     if not conn:
@@ -432,3 +479,94 @@ def render(conn):
             st.dataframe(df_result.reset_index(drop=True))
         else:
             st.error("Không thể cập nhật dữ liệu. Vui lòng kiểm tra log.")
+
+    st.subheader("Section 3 — RRG Data Calculation & Storage")
+    st.markdown(
+        """
+        - Tính toán và lưu dữ liệu RRG vào bảng `rrg_data`.
+        - Nhập danh sách mã cần tính toán (phân cách bằng dấu phẩy) hoặc '*' để tính cho tất cả mã trong `stock_prices` của ngày hiện tại.
+        - Dữ liệu RRG sẽ được lưu để sử dụng nhanh khi vẽ biểu đồ.
+        """
+    )
+
+    symbol_input = st.text_input(
+        "Danh sách mã cần tính RRG",
+        value="*",
+        help="Nhập các mã phân cách bằng dấu phẩy (ví dụ: ACB,VCB,TCB) hoặc '*' để tính cho tất cả mã có trong stock_prices của ngày hiện tại",
+    )
+
+    if st.button("Calculate & Save RRG Data", type="primary"):
+        if not symbol_input or not symbol_input.strip():
+            st.error("Vui lòng nhập danh sách mã hoặc '*'.")
+            return
+
+        # Get symbols to process
+        if symbol_input.strip() == "*":
+            with st.spinner("Đang lấy danh sách mã từ stock_prices..."):
+                stock_data = get_stock_symbols_for_today(conn)
+                if not stock_data:
+                    st.warning("Không có dữ liệu trong stock_prices cho ngày hôm nay.")
+                    return
+                symbols_to_process = [symbol for symbol, _ in stock_data]
+        else:
+            # Parse comma-separated symbols
+            symbols_to_process = [s.strip().upper() for s in symbol_input.split(",") if s.strip()]
+            if not symbols_to_process:
+                st.error("Không có mã hợp lệ trong danh sách.")
+                return
+
+        st.info(f"Sẽ tính toán RRG cho {len(symbols_to_process)} mã: {', '.join(symbols_to_process[:10])}{'...' if len(symbols_to_process) > 10 else ''}")
+
+        # Calculate date range (need enough history for RRG calculation)
+        today = date.today()
+        start_date = today - timedelta(days=365)  # Get 1 year of data
+        end_date = today
+
+        # Process each symbol
+        success_count = 0
+        failed_symbols = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        for idx, symbol in enumerate(symbols_to_process):
+            try:
+                status_text.text(f"Đang tính toán RRG cho {symbol} ({idx + 1}/{len(symbols_to_process)})...")
+
+                # Fetch price data for symbol and benchmark
+                price_df = db_connector.fetch_price_data(
+                    conn, [symbol, BENCHMARK_SYMBOL], start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+                )
+
+                if price_df.empty:
+                    failed_symbols.append(f"{symbol} (không có dữ liệu giá)")
+                    progress_bar.progress((idx + 1) / len(symbols_to_process))
+                    continue
+
+                # Calculate RRG data
+                rrg_df = calculate_rrg_data(price_df, BENCHMARK_SYMBOL, RRG_PERIOD, SCALE_FACTOR)
+
+                if rrg_df.empty:
+                    failed_symbols.append(f"{symbol} (không tính được RRG)")
+                    progress_bar.progress((idx + 1) / len(symbols_to_process))
+                    continue
+
+                # Save to database
+                save_success = save_rrg_data_to_db(conn, rrg_df)
+                if save_success:
+                    success_count += 1
+                else:
+                    failed_symbols.append(f"{symbol} (lỗi khi lưu)")
+
+            except Exception as exc:
+                failed_symbols.append(f"{symbol} (lỗi: {str(exc)[:50]})")
+
+            progress_bar.progress((idx + 1) / len(symbols_to_process))
+
+        status_text.empty()
+        progress_bar.empty()
+
+        if success_count > 0:
+            st.success(f"Đã tính toán và lưu RRG cho {success_count} mã thành công.")
+        if failed_symbols:
+            st.warning(f"Không thể xử lý {len(failed_symbols)} mã: {', '.join(failed_symbols[:10])}{'...' if len(failed_symbols) > 10 else ''}")
+
