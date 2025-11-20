@@ -197,11 +197,14 @@ def plot_rrg_time_series_2(rrg_df: pd.DataFrame, symbol: str, benchmark: str, pe
     ax.axvline(100, color='gray', linestyle='--', linewidth=0.8)
 
     # Đặt giới hạn trục X và Y
-    min_val = min(rs.min(), rm.min(), 98)
-    max_val = max(rs.max(), rm.max(), 102)
-    padding = (max_val - min_val) * 0.1
-    ax.set_xlim(min_val - padding, max_val + padding)
-    ax.set_ylim(min_val - padding, max_val + padding)
+    rm_min_val = min( rm.min(), 98)
+    rm_max_val = max( rm.max(), 102)
+    rs_min_val = min(rs.min(), 98)
+    rs_max_val = max(rs.max(), 102)
+    rm_padding = (rm_max_val - rm_min_val) * 0.1
+    rs_padding = (rs_max_val - rs_min_val) * 0.1
+    ax.set_xlim(rs_min_val - rs_padding, rs_max_val + rs_padding)
+    ax.set_ylim(rm_min_val - rm_padding, rm_max_val + rm_padding)
     
     # Xác định quadrant
     quadrants = pd.Series(index=rs.index, dtype=str)
