@@ -26,8 +26,10 @@ def _create_new_connection():
     DB_URL = os.environ.get("DATABASE_URL") 
     
     if not DB_URL:
-        st.error("Lỗi: Không tìm thấy chuỗi kết nối DB (DB_URL).")
-        return None
+        DB_URL = st.secrets.get("DATABASE_URL") 
+        if not DB_URL:
+            st.error("Lỗi: Không tìm thấy chuỗi kết nối DB (DB_URL).")
+            return None
     
     try:
         return psycopg2.connect(DB_URL)
