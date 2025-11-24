@@ -210,6 +210,39 @@ def get_stock_symbols_for_today(conn):
         return []
 
 
+
+def get_stock_symbolsge_with_margin_for_today(conn, margin_threshold: float = 10):
+    """Get list of (symbol, close_price) from stock_prices where date is today."""
+    if not conn:
+        return []
+
+    conn = db_connector.ensure_connection(conn)
+    if not conn:
+        return []
+
+    try:
+        today = date.today()
+        query = """
+            SELECT stock_prices.symbol, close
+            FROM stock_prices, stock_info
+            WHERE date = %s
+                AND stock_prices.symbol = stock_info.symbol
+                AND stock_info.margin >= %s
+            ORDER BY symbol ASC;
+        """
+        df = pd.read_sql(query, conn, params=(today, margin_threshold))
+        if df.empty:
+            return []
+        # Filter out rows with NaN or null close prices
+        df = df.dropna(subset=["close"])
+        if df.empty:
+            return []
+        return list(zip(df["symbol"].tolist(), df["close"].tolist()))
+    except Exception as exc:
+        st.error(f"Lỗi khi lấy danh sách mã từ stock_prices: {exc}")
+        return []
+
+
 def fetch_margin_from_ssi_api(symbol: str, price: float, bearer_token: str, account: str = "1862556"):
     """Call SSI API to get margin ratio for a stock symbol."""
     # Check for NaN or invalid price
@@ -503,7 +536,7 @@ def render(conn):
         # Get symbols to process
         if symbol_input.strip() == "*":
             with st.spinner("Đang lấy danh sách mã từ stock_prices..."):
-                stock_data = get_stock_symbols_for_today(conn)
+                stock_data = get_stock_symbolsge_with_margin_for_today(conn)
                 if not stock_data:
                     st.warning("Không có dữ liệu trong stock_prices cho ngày hôm nay.")
                     return
