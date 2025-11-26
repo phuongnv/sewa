@@ -44,7 +44,7 @@ def get_db_connection():
     Tự động reconnect nếu kết nối bị đóng.
     """
     # Sử dụng st.cache_resource để chỉ kết nối một lần
-    @st.cache_resource
+    # @st.cache_resource
     def connect_db():
         return _create_new_connection()
     

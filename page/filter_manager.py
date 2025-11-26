@@ -5,6 +5,8 @@ import numpy as np
 from datetime import datetime, date, timedelta
 
 import db_connector
+import update_ssi_prices
+import threading
 from page.generate_charts import calculate_rrg_data, BENCHMARK_SYMBOL, RRG_PERIOD, SCALE_FACTOR
 
 API_URL = "https://scanner.tradingview.com/vietnam/scan?label-product=screener-stock"
@@ -603,3 +605,14 @@ def render(conn):
         if failed_symbols:
             st.warning(f"Không thể xử lý {len(failed_symbols)} mã: {', '.join(failed_symbols[:10])}{'...' if len(failed_symbols) > 10 else ''}")
 
+    if st.button("Update prices", type="primary"):
+        # update_ssi_prices.update_latest()
+        thread = threading.Thread(target=update_ssi_prices.update_latest)
+        thread.daemon = True  # Ensure the thread exits when the main program exits
+        thread.start()
+
+    if st.button("Cals RRG and pesists", type="primary"):
+        # update_ssi_prices.calculate_and_save_rrg_data(conn=conn)
+        thread = threading.Thread(target=update_ssi_prices.calculate_and_save_rrg_data, kwargs={"conn": conn})
+        thread.daemon = True  # Ensure the thread exits when the main program exits
+        thread.start()

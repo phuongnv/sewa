@@ -1,23 +1,28 @@
 import os
 import psycopg2
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 import schedule
 import time
+import pytz
+import page.filter_manager as filter_manager
+import page.generate_charts as generate_charts
+import db_connector
 
 load_dotenv()
 DB_URL = os.getenv("DATABASE_URL")
 
 headers = {
-        "accept": "application/json, text/plain, */*",
-        "accept-language": "vi",
-        "device-id": "ADF1E947-BFD7-47BA-AA97-27531F3CC595",
-        "origin": "https://iboard.ssi.com.vn",
-        "referer": "https://iboard.ssi.com.vn/",
-        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
-    }
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "vi",
+    "device-id": "ADF1E947-BFD7-47BA-AA97-27531F3CC595",
+    "origin": "https://iboard.ssi.com.vn",
+    "referer": "https://iboard.ssi.com.vn/",
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+}
+
 
 def get_db_connection():
     return psycopg2.connect(DB_URL)
@@ -25,6 +30,8 @@ def get_db_connection():
 # ===============================
 # Fetch market index (VNINDEX, HNXIndex)
 # ===============================
+
+
 def fetch_index_data(symbol, has_history=True):
     # url = f"https://iboard-query.ssi.com.vn/exchange-index/{symbol}"
     # if has_history:
@@ -70,7 +77,8 @@ def fetch_index_data(symbol, has_history=True):
         high = data.get("chartHigh")
         low = data.get("chartLow")
         volume = data.get("totalQtty", 0)
-        records.append((symbol, date, open_price, high, low, close_price, volume, symbol.upper()))
+        records.append((symbol, date, open_price, high, low,
+                       close_price, volume, symbol.upper()))
 
     print(f"✅ Fetched {len(records)} records for {symbol}")
     return records
@@ -78,16 +86,17 @@ def fetch_index_data(symbol, has_history=True):
 # ===============================
 # Fetch stock prices for HOSE and HNX
 # ===============================
+
+
 def fetch_stock_data(exchange):
     url = f"https://iboard-query.ssi.com.vn/stock/exchange/{exchange}?boardId=MAIN"
-
-    
 
     resp = requests.get(url, headers=headers, timeout=20)
     resp.raise_for_status()
     data = resp.json().get("data", [])
 
     records = []
+
     def div_thousand(value):
         if value is None:
             return None
@@ -107,7 +116,8 @@ def fetch_stock_data(exchange):
         high = div_thousand(item.get("highest"))
         low = div_thousand(item.get("lowest"))
         volume = item.get("nmTotalTradedQty")
-        records.append((symbol, date, open_price, high, low, close_price, volume, exchange.upper()))
+        records.append((symbol, date, open_price, high, low,
+                       close_price, volume, exchange.upper()))
 
     print(f"✅ Fetched {len(records)} stocks from {exchange.upper()}")
     return records
@@ -124,6 +134,7 @@ def fetch_stock_list(exchange: str):
     symbols = [item["symbol"] for item in data if "symbol" in item]
     print(f"✅ Fetched {len(symbols)} stocks from {exchange}")
     return symbols
+
 
 def fetch_stock_history(symbol: str, days: int = 100):
     """Lấy lịch sử giá 100 ngày gần nhất cho 1 mã cổ phiếu"""
@@ -157,6 +168,7 @@ def fetch_stock_history(symbol: str, days: int = 100):
         v = hist["v"][i]
         records.append((symbol, date, o, h, l, c, v))
     return records
+
 
 def save_stock_history(conn, records, exchange):
     """Lưu dữ liệu lịch sử vào bảng stock_prices"""
@@ -199,6 +211,7 @@ def update_exchange(conn, exchange: str, days: int = 100):
     else:
         print(f"⚠️ {symbol} ({exchange}): không có dữ liệu")
 
+
 def update_all(conn, days: int = 100):
     """Quét cả HOSE và HNX"""
     for ex in ["hose", "hnx"]:
@@ -209,6 +222,8 @@ def update_all(conn, days: int = 100):
 # ===============================
 # Save to DB
 # ===============================
+
+
 def save_rrg_data(conn, records, table="rrg_index_data"):
     """
     Lưu danh sách records vào bảng rrg_index_data.
@@ -227,7 +242,8 @@ def save_rrg_data(conn, records, table="rrg_index_data"):
             symbol = r[0]
             dt = r[1]
             date_only = dt.date() if isinstance(dt, datetime) else dt
-            normalized_records.append((symbol, date_only, r[2], r[3], r[4], r[5]))
+            normalized_records.append(
+                (symbol, date_only, r[2], r[3], r[4], r[5]))
 
         unique_records = {(r[0], r[1]): r for r in normalized_records}
         records = list(unique_records.values())
@@ -264,7 +280,8 @@ def save_stock_data(conn, records, table="stock_prices"):
             dt = r[1]
             date_only = dt.date() if isinstance(dt, datetime) else dt
             # (symbol, date, open, high, low, close, volume, exchange)
-            normalized_records.append((symbol, date_only, r[2], r[3], r[4], r[5], r[6], r[7]))
+            normalized_records.append(
+                (symbol, date_only, r[2], r[3], r[4], r[5], r[6], r[7]))
 
         unique_records = {(r[0], r[1]): r for r in normalized_records}
         records = list(unique_records.values())
@@ -286,6 +303,8 @@ def save_stock_data(conn, records, table="stock_prices"):
 # ===============================
 # Update modes
 # ===============================
+
+
 def update_history():
     conn = get_db_connection()
     indexes = ["VNINDEX", "HNXIndex"]
@@ -298,12 +317,14 @@ def update_history():
     update_all(conn, days=200)
     conn.close()
 
+
 def update_latest():
+    print("🔹 Updating latest market & stock data ...")
     conn = get_db_connection()
     indexes = ["VNINDEX", "HNXIndex"]
     for idx in indexes:
         records = fetch_index_data(idx, has_history=False)
-        
+
         save_stock_data(conn, records)
         # save_rrg_data(conn, records)
     for exch in ["hose", "hnx"]:
@@ -313,13 +334,114 @@ def update_latest():
         save_stock_data(conn, stock_records)
     conn.close()
 
+def calculate_and_save_rrg_data(conn):
+    """
+    Fetch symbols from stock_prices, calculate RRG data, and save to the database.
+    """
+    print("🔹 Starting RRG data calculation and saving...")
+
+    # Fetch symbols for today
+    today = date.today()
+    start_date = today - timedelta(days=365)  # Get 1 year of data
+    end_date = today
+
+    try:
+        # Fetch symbols with margin for today
+        stock_data = filter_manager.get_stock_symbolsge_with_margin_for_today(conn)
+        if not stock_data:
+            print("⚠️ No stock data found for today.")
+            return
+
+        symbols_to_process = [symbol for symbol, _ in stock_data]
+        print(f"🔹 Found {len(symbols_to_process)} symbols to process.")
+
+        success_count = 0
+        failed_symbols = []
+
+        for idx, symbol in enumerate(symbols_to_process):
+            try:
+                print(f"🔄 Processing symbol {symbol} ({idx + 1}/{len(symbols_to_process)})...")
+
+                # Fetch price data for symbol and benchmark
+                price_df = db_connector.fetch_price_data(
+                    conn, [symbol, generate_charts.BENCHMARK_SYMBOL], start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+                )
+
+                if price_df.empty:
+                    failed_symbols.append(f"{symbol} (no price data)")
+                    continue
+
+                # Calculate RRG data
+                rrg_df = generate_charts.calculate_rrg_data(price_df, generate_charts.BENCHMARK_SYMBOL, generate_charts.RRG_PERIOD, generate_charts.SCALE_FACTOR)
+
+                if rrg_df.empty:
+                    failed_symbols.append(f"{symbol} (RRG calculation failed)")
+                    continue
+
+                # Save to database
+                save_success = filter_manager.save_rrg_data_to_db(conn, rrg_df)
+                if save_success:
+                    success_count += 1
+                else:
+                    failed_symbols.append(f"{symbol} (failed to save)")
+
+            except Exception as exc:
+                failed_symbols.append(f"{symbol} (error: {str(exc)[:50]})")
+
+        print(f"✅ Successfully processed {success_count} symbols.")
+        if failed_symbols:
+            print(f"⚠️ Failed to process {len(failed_symbols)} symbols: {', '.join(failed_symbols[:10])}...")
+
+    except Exception as exc:
+        print(f"❌ Error during RRG calculation: {exc}")
+
+def update_latest_and_calculate_rrg():
+    """
+    Update the latest market & stock data, then calculate and save RRG data.
+    """
+    print("🔹 Updating latest market & stock data...")
+    update_latest()
+
+    print("🔹 Calculating and saving RRG data...")
+    conn = get_db_connection()
+    calculate_and_save_rrg_data(conn)
+    conn.close()
 # ===============================
 # Main
 # ===============================
+def launch_daily_scheduler(update_latest_and_calculate_rrg):
+    VN_TZ = pytz.timezone("Asia/Ho_Chi_Minh")
+    print("🕒 Auto mode started (market-hours every 30 minutes from 09:30 to 15:00 VN time)")
+
+        # Schedule `update_latest` every 30 minutes from 09:30 to 15:00
+    start_time = datetime.strptime("09:30", "%H:%M")
+    end_time = datetime.strptime("15:00", "%H:%M")
+    current_time = start_time
+    print("Scheduling updates between", start_time.strftime("%H:%M"),
+              "and", end_time.strftime("%H:%M"))
+    scheduled_times = []
+
+    while current_time <= end_time:
+        vn_time = VN_TZ.localize(current_time)
+        utc_time = vn_time.astimezone(pytz.utc)
+        time_str = utc_time.strftime("%H:%M")
+        schedule.every().day.at(time_str).do(update_latest_and_calculate_rrg)
+        scheduled_times.append(f"{current_time.strftime('%H:%M')} (VN time)")
+        current_time += timedelta(minutes=30)
+
+    print("Scheduled update_latest at:", ", ".join(scheduled_times))
+
+        # Run the scheduler
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Update SSI market & stock data")
-    parser.add_argument("--mode", choices=["history", "latest", "auto"], default="latest")
+    parser = argparse.ArgumentParser(
+        description="Update SSI market & stock data")
+    parser.add_argument(
+        "--mode", choices=["history", "latest", "auto"], default="latest")
     args = parser.parse_args()
 
     if args.mode == "history":
@@ -330,8 +452,4 @@ if __name__ == "__main__":
         print("🔹 Updating latest data ... at ", datetime.now(tz=vn_tz))
         update_latest()
     elif args.mode == "auto":
-        print("🕒 Auto mode started (daily 17:00 VN time)")
-        schedule.every().day.at("17:00").do(update_latest)
-        while True:
-            schedule.run_pending()
-            time.sleep(60)
+        launch_daily_scheduler(update_latest_and_calculate_rrg)
