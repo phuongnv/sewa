@@ -57,3 +57,4 @@ watchdog==6.0.0
 websockets==15.0.1
 yfinance==0.2.66
 psycopg2-binary==2.9.10
+schedule==1.2.0
