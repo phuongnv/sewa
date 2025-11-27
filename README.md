@@ -70,3 +70,8 @@ POSTGRES_PASSWORD=apppassword
 Learn more about Streamlit, deployment options, and components on the official site: [streamlit.io](https://streamlit.io/).
 
 
+docker compose build
+docker compose up
+
+### rebuild after the code change
+docker compose up --build -d

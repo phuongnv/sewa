@@ -399,7 +399,8 @@ def update_latest_and_calculate_rrg():
     """
     Update the latest market & stock data, then calculate and save RRG data.
     """
-    print("🔹 Updating latest market & stock data...")
+    vn_tz = timezone(timedelta(hours=7))
+    print("🔹 Updating latest market & stock data...", datetime.now(tz=vn_tz))
     update_latest()
 
     print("🔹 Calculating and saving RRG data...")
@@ -415,26 +416,31 @@ def launch_daily_scheduler(update_latest_and_calculate_rrg):
 
         # Schedule `update_latest` every 30 minutes from 09:30 to 15:00
     start_time = datetime.strptime("09:30", "%H:%M")
-    end_time = datetime.strptime("15:00", "%H:%M")
+    end_time = datetime.strptime("16:00", "%H:%M")
+    exclusive_start_time = datetime.strptime("11:30", "%H:%M")
+    exclusive_end_time = datetime.strptime("13:00", "%H:%M")
     current_time = start_time
     print("Scheduling updates between", start_time.strftime("%H:%M"),
               "and", end_time.strftime("%H:%M"))
     scheduled_times = []
 
     while current_time <= end_time:
+        if exclusive_start_time <= current_time < exclusive_end_time:
+            current_time += timedelta(minutes=60)
+            continue
         vn_time = VN_TZ.localize(current_time)
         utc_time = vn_time.astimezone(pytz.utc)
         time_str = utc_time.strftime("%H:%M")
         schedule.every().day.at(time_str).do(update_latest_and_calculate_rrg)
         scheduled_times.append(f"{current_time.strftime('%H:%M')} (VN time)")
-        current_time += timedelta(minutes=30)
+        current_time += timedelta(minutes=60)
 
     print("Scheduled update_latest at:", ", ".join(scheduled_times))
 
         # Run the scheduler
     while True:
         schedule.run_pending()
-        time.sleep(1)
+        time.sleep(60)
 
 if __name__ == "__main__":
     import argparse

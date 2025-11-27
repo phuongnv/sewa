@@ -4,6 +4,12 @@ import os
 import pandas as pd
 from datetime import datetime
 
+import warnings
+
+# Suppress all warnings
+warnings.filterwarnings("ignore")
+
+
 # =====================
 # CẤU HÌNH VÀ KẾT NỐI DB
 # =====================

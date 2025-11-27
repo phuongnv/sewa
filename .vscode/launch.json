@@ -41,6 +41,17 @@
             }
         },
         {
+            "name": "Debugger: feed auto today",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "update_ssi_prices.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--mode",
+                "auto"
+            ]
+        },
+        {
             "name": "Debugger: feed data history",
             "type": "debugpy",
             "request": "launch",

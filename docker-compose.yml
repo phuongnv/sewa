@@ -1,0 +1,12 @@
+version: "3.8"
+
+services:
+  update-ssi-prices:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: update_ssi_prices
+    restart: always
+    volumes:
+      - .:/app  # Mount the current directory to the container for development
+    command: ["python3", "update_ssi_prices.py", "--mode", "auto"]
