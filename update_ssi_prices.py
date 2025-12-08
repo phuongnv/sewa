@@ -417,7 +417,7 @@ def launch_daily_scheduler(update_latest_and_calculate_rrg):
         # Schedule `update_latest` every 30 minutes from 09:30 to 15:00
     start_time = datetime.strptime("09:30", "%H:%M")
     end_time = datetime.strptime("16:00", "%H:%M")
-    exclusive_start_time = datetime.strptime("11:30", "%H:%M")
+    exclusive_start_time = datetime.strptime("11:33", "%H:%M")
     exclusive_end_time = datetime.strptime("13:00", "%H:%M")
     current_time = start_time
     print("Scheduling updates between", start_time.strftime("%H:%M"),
