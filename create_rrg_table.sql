@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS rrg_data (
     rs_ratio_scaled NUMERIC(10, 4) NOT NULL,
     rs_momentum_scaled NUMERIC(10, 4) NOT NULL,
     close NUMERIC(12, 2),
+    rs_fa NUMERIC(20, 17),
+    rm_fa NUMERIC(20, 17),
     created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (symbol, date)
@@ -25,4 +27,6 @@ COMMENT ON COLUMN rrg_data.date IS 'Trading date';
 COMMENT ON COLUMN rrg_data.rs_ratio_scaled IS 'RS-Ratio scaled value (centered at 100)';
 COMMENT ON COLUMN rrg_data.rs_momentum_scaled IS 'RS-Momentum scaled value (centered at 100)';
 COMMENT ON COLUMN rrg_data.close IS 'Closing price for the date';
+COMMENT ON COLUMN rrg_data.rs_fa IS 'RS value from FireAnt RRG API';
+COMMENT ON COLUMN rrg_data.rm_fa IS 'RM value from FireAnt RRG API';
 

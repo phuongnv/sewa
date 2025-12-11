@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, timedelta
+from psycopg2.extras import execute_values
 
 import db_connector
 import update_ssi_prices
@@ -243,6 +244,64 @@ def get_stock_symbolsge_with_margin_for_today(conn, margin_threshold: float = 10
     except Exception as exc:
         st.error(f"Lỗi khi lấy danh sách mã từ stock_prices: {exc}")
         return []
+
+
+def fetch_rrg_from_fireant_api(symbol: str, bearer_token: str, start_date: date, end_date: date):
+    """Fetch RRG data from FireAnt API for a symbol."""
+    url = f"https://restv2.fireant.vn/symbols/{symbol}/rrg?startDate={start_date}&endDate={end_date}"
+    headers = {
+        "User-Agent": "Chrome/100.0.4896.75",
+        "Authorization": f"Bearer {bearer_token}",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list):
+            return []
+        records = []
+        for item in data:
+            try:
+                d = datetime.fromisoformat(item["date"]).date()
+                rs_val = float(item.get("rs"))
+                rm_val = float(item.get("rm"))
+                records.append((symbol, d, rs_val, rm_val))
+            except Exception:
+                continue
+        return records
+    except Exception as exc:
+        st.warning(f"{symbol}: lỗi khi gọi FireAnt API ({exc})")
+        return []
+
+
+def upsert_rrg_fireant(conn, records: list):
+    """Update existing rrg_data rows with FireAnt values (rs_fa, rm_fa) only."""
+    if not records:
+        return False
+
+    conn = db_connector.ensure_connection(conn)
+    if not conn:
+        return False
+
+    rows = [(sym, d, rs, rm) for sym, d, rs, rm in records]
+
+    update_sql = """
+        UPDATE rrg_data AS t
+        SET rs_fa = v.rs_fa,
+            rm_fa = v.rm_fa,
+            updated_at = NOW()
+        FROM (VALUES %s) AS v(symbol, date, rs_fa, rm_fa)
+        WHERE t.symbol = v.symbol AND t.date = v.date;
+    """
+    try:
+        with conn.cursor() as cur:
+            execute_values(cur, update_sql, rows, template="(%s,%s,%s,%s)")
+        conn.commit()
+        return True
+    except Exception as exc:
+        conn.rollback()
+        st.error(f"Lỗi khi cập nhật rrg_data từ FireAnt: {exc}")
+        return False
 
 
 def fetch_margin_from_ssi_api(symbol: str, price: float, bearer_token: str, account: str = "1862556"):
@@ -514,6 +573,78 @@ def render(conn):
             st.dataframe(df_result.reset_index(drop=True))
         else:
             st.error("Không thể cập nhật dữ liệu. Vui lòng kiểm tra log.")
+
+    st.markdown("---")
+    st.subheader("Section 2b — FireAnt RRG (cho mã có Margin > 0)")
+    st.markdown(
+        """
+        - Lấy danh sách mã có `margin > 0` trong `stock_info` (theo dữ liệu `stock_prices` ngày hôm nay).
+        - Gọi FireAnt API để lấy RRG (`rs`, `rm`) và lưu vào bảng `rrg_data` với cột mới `rs_fa`, `rm_fa`.
+        - Cần Bearer token hợp lệ cho FireAnt.\n
+        """
+    )
+
+    fa_bearer_token = st.text_input(
+        "FireAnt Bearer Token",
+        type="password",
+        help="Bearer token cho API FireAnt RRG",
+        key="fireant_bearer",
+    )
+    default_start = date.today() - timedelta(days=365)
+    default_end = date.today()
+    fa_start_date = st.date_input("Start date (FireAnt RRG)", value=default_start, key="fa_start_date")
+    fa_end_date = st.date_input("End date (FireAnt RRG)", value=default_end, key="fa_end_date")
+
+    if st.button("Fetch & Update RRG", type="primary"):
+        if not fa_bearer_token:
+            st.error("Vui lòng nhập Bearer token cho FireAnt.")
+            return
+        if fa_start_date > fa_end_date:
+            st.error("Start date phải nhỏ hơn hoặc bằng End date.")
+            return
+
+        with st.spinner("Đang lấy danh sách mã có margin > 0..."):
+            stock_data = get_stock_symbolsge_with_margin_for_today(conn, margin_threshold=0.0001)
+
+        if not stock_data:
+            st.warning("Không có mã nào có margin > 0 trong ngày hôm nay.")
+            return
+
+        symbols = [s for s, _ in stock_data]
+        st.info(f"Tìm thấy {len(symbols)} mã. Đang gọi FireAnt API...")
+
+        all_records = []
+        failed = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        for idx, sym in enumerate(symbols):
+            status_text.text(f"Đang xử lý {sym} ({idx + 1}/{len(symbols)})...")
+            records = fetch_rrg_from_fireant_api(sym, fa_bearer_token, fa_start_date, fa_end_date)
+            if records:
+                all_records.extend(records)
+            else:
+                failed.append(sym)
+            progress_bar.progress((idx + 1) / len(symbols))
+
+        status_text.empty()
+        progress_bar.empty()
+
+        if not all_records:
+            st.warning("Không có dữ liệu RRG nào được trả về.")
+            if failed:
+                st.info(f"Không lấy được dữ liệu cho {len(failed)} mã: {', '.join(failed[:10])}{'...' if len(failed) > 10 else ''}")
+            return
+
+        with st.spinner(f"Đang lưu {len(all_records)} bản ghi vào rrg_data..."):
+            success = upsert_rrg_fireant(conn, all_records)
+
+        if success:
+            st.success(f"Đã lưu {len(all_records)} bản ghi RRG từ FireAnt.")
+            if failed:
+                st.info(f"Bỏ qua {len(failed)} mã không có dữ liệu: {', '.join(failed[:10])}{'...' if len(failed) > 10 else ''}")
+        else:
+            st.error("Không thể lưu dữ liệu RRG. Vui lòng kiểm tra log.")
 
     st.subheader("Section 3 — RRG Data Calculation & Storage")
     st.markdown(

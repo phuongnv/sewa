@@ -120,7 +120,7 @@ def fetch_rrg_data_from_db(conn, symbols: list[str], start_date: str, end_date: 
             symbol_list = (symbols[0],)
 
         query = """
-            SELECT symbol, date, rs_ratio_scaled, rs_momentum_scaled, close
+            SELECT symbol, date, rs_ratio_scaled, rs_momentum_scaled, rs_fa, rm_fa, close
             FROM rrg_data
             WHERE symbol IN %s AND date BETWEEN %s AND %s
             ORDER BY date, symbol;
@@ -212,12 +212,21 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
         st.info("Không có dữ liệu RRG để vẽ biểu đồ.")
         return
 
-    rs = rrg_df[rrg_df['symbol'] == symbol]['rs_ratio_scaled']
-    rm = rrg_df[rrg_df['symbol'] == symbol]['rs_momentum_scaled']
+    symbol_data = rrg_df[rrg_df['symbol'] == symbol].sort_values('date')
+    rs = symbol_data['rs_ratio_scaled']
+    rm = symbol_data['rs_momentum_scaled']
 
     if rs.empty:
         st.warning(f"Không tìm thấy dữ liệu RRG đã tính toán cho mã {symbol}.")
         return
+    
+    # Lấy dữ liệu rs_fa và rm_fa nếu có
+    has_fa_data = 'rs_fa' in symbol_data.columns and 'rm_fa' in symbol_data.columns
+    if has_fa_data:
+        rs_fa = symbol_data['rs_fa']
+        rm_fa = symbol_data['rm_fa']
+        # Chỉ sử dụng dữ liệu FA nếu không phải tất cả đều NaN
+        has_fa_data = not (rs_fa.isna().all() or rm_fa.isna().all())
 
     fig, ax = plt.subplots(figsize=(10, 10))
 
@@ -228,11 +237,23 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
     ax.axhline(100, color='gray', linestyle='--', linewidth=0.8)
     ax.axvline(100, color='gray', linestyle='--', linewidth=0.8)
 
-    # Đặt giới hạn trục X và Y
-    rm_min_val = min( rm.min(), 98)
-    rm_max_val = max( rm.max(), 102)
+    # Đặt giới hạn trục X và Y (bao gồm cả dữ liệu FA nếu có)
+    rm_min_val = min(rm.min(), 98)
+    rm_max_val = max(rm.max(), 102)
     rs_min_val = min(rs.min(), 98)
     rs_max_val = max(rs.max(), 102)
+    
+    if has_fa_data:
+        # Mở rộng giới hạn để bao gồm dữ liệu FA
+        rs_fa_valid = rs_fa.dropna()
+        rm_fa_valid = rm_fa.dropna()
+        if not rs_fa_valid.empty:
+            rs_min_val = min(rs_min_val, rs_fa_valid.min())
+            rs_max_val = max(rs_max_val, rs_fa_valid.max())
+        if not rm_fa_valid.empty:
+            rm_min_val = min(rm_min_val, rm_fa_valid.min())
+            rm_max_val = max(rm_max_val, rm_fa_valid.max())
+    
     rm_padding = (rm_max_val - rm_min_val) * 0.1
     rs_padding = (rs_max_val - rs_min_val) * 0.1
     ax.set_xlim(rs_min_val - rs_padding, rs_max_val + rs_padding)
@@ -264,6 +285,31 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
 
     # Điểm đầu tiên
     ax.scatter(rs.iloc[0], rm.iloc[0], color='gray', s=50, marker='o', zorder=5)
+    
+    # Vẽ đường RRG từ dữ liệu FA (rs_fa, rm_fa) với màu đen
+    if has_fa_data:
+        # Lọc bỏ các giá trị NaN và vẽ đường nối các điểm hợp lệ
+        valid_indices = ~(rs_fa.isna() | rm_fa.isna())
+        if valid_indices.sum() > 0:
+            rs_fa_valid = rs_fa[valid_indices]
+            rm_fa_valid = rm_fa[valid_indices]
+            
+            # Vẽ đường nối các điểm
+            for i in range(1, len(rs_fa_valid)):
+                ax.plot(
+                    [rs_fa_valid.iloc[i-1], rs_fa_valid.iloc[i]],
+                    [rm_fa_valid.iloc[i-1], rm_fa_valid.iloc[i]],
+                    color='black',
+                    linewidth=2,
+                    alpha=0.7,
+                    linestyle='-',
+                    zorder=2,
+                    label='FA Data' if i == 1 else ''
+                )
+            
+            # Điểm cuối cùng của đường FA
+            if len(rs_fa_valid) > 0:
+                ax.scatter(rs_fa_valid.iloc[-1], rm_fa_valid.iloc[-1], color='black', s=100, marker='x', zorder=4, label='FA End')
 
     # Thêm nhãn góc phần tư
     ax.text(ax.get_xlim()[1] * 0.95, ax.get_ylim()[1] * 0.95, 'Leading', fontsize=12, color='green', ha='right', va='top')
@@ -272,9 +318,8 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
     ax.text(ax.get_xlim()[0] * 1.05, ax.get_ylim()[1] * 0.95, 'Improving', fontsize=12, color='#ffc000', ha='left', va='top')
 
     # Get last price for the current symbol
-    symbol_df = rrg_df[rrg_df['symbol'] == symbol].sort_values('date')
-    if not symbol_df.empty and 'close' in symbol_df.columns:
-        last_price = symbol_df.iloc[-1]['close']
+    if not symbol_data.empty and 'close' in symbol_data.columns:
+        last_price = symbol_data.iloc[-1]['close']
     else:
         last_price = None
 
