@@ -144,6 +144,36 @@ def fetch_rrg_data_from_db(conn, symbols: list[str], start_date: str, end_date: 
         return pd.DataFrame()
 
 
+def fetch_fa_data_from_db(conn, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetch only rs_fa and rm_fa data from rrg_data table for a single symbol."""
+    if not conn or not symbol:
+        return pd.DataFrame()
+
+    conn = db_connector.ensure_connection(conn)
+    if not conn:
+        return pd.DataFrame()
+
+    try:
+        query = """
+            SELECT symbol, date, rs_fa, rm_fa
+            FROM rrg_data
+            WHERE symbol = %s AND date BETWEEN %s AND %s
+            ORDER BY date;
+        """
+
+        df = pd.read_sql(query, conn, params=(symbol, start_date, end_date))
+
+        if df.empty:
+            return pd.DataFrame()
+
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+
+    except Exception as e:
+        # Silently fail - FA data is optional
+        return pd.DataFrame()
+
+
 def filter_symbols_by_rrg_condition(conn, symbols: list[str], end_date, condition: str) -> list[str]:
     """Filter symbols based on stored RRG data conditions."""
     if condition == "none" or not symbols:
@@ -491,6 +521,15 @@ def render(conn):
                     if rrg_filtered.empty:
                         symbol_data[symbol] = None
                     else:
+                        # Bổ sung dữ liệu rs_fa và rm_fa từ database
+                        fa_df = fetch_fa_data_from_db(conn, symbol, str_start, str_end)
+                        if not fa_df.empty:
+                            # Merge dữ liệu FA vào rrg_filtered theo symbol và date
+                            rrg_filtered = rrg_filtered.merge(
+                                fa_df[['date', 'rs_fa', 'rm_fa']],
+                                on=['date'],
+                                how='left'
+                            )
                         symbol_data[symbol] = rrg_filtered
             else:
                 # Fetch from DB, fallback to calculation if missing
