@@ -599,8 +599,10 @@ def render(conn):
 
     if st.button("Fetch & Update RRG", type="primary"):
         if not fa_bearer_token:
-            st.error("Vui lòng nhập Bearer token cho FireAnt.")
-            return
+            fa_bearer_token = st.secrets.get("FIREANT_BEARER_TOKEN")
+            if not fa_bearer_token:
+                st.error("Vui lòng nhập Bearer token cho FireAnt.")
+                return
         if fa_start_date > fa_end_date:
             st.error("Start date phải nhỏ hơn hoặc bằng End date.")
             return
