@@ -249,8 +249,7 @@ def get_stock_symbolsge_with_margin_for_today(conn, margin_threshold: float = 10
 def fetch_rrg_from_fireant_api(symbol: str, bearer_token: str, start_date: date, end_date: date):
     """Fetch RRG data from FireAnt API for a symbol."""
     url = f"https://restv2.fireant.vn/symbols/{symbol}/rrg?startDate={start_date}&endDate={end_date}"
-    if not bearer_token:
-        bearer_token = st.secrets.get("FIREANT_BEARER_TOKEN")
+    
     headers = {
         "User-Agent": "Chrome/100.0.4896.75",
         "Authorization": f"Bearer {bearer_token}",
@@ -592,7 +591,7 @@ def render(conn):
         help="Bearer token cho API FireAnt RRG",
         key="fireant_bearer",
     )
-    default_start = date.today() - timedelta(days=365)
+    default_start = date.today() - timedelta(days=3)
     default_end = date.today()
     fa_start_date = st.date_input("Start date (FireAnt RRG)", value=default_start, key="fa_start_date")
     fa_end_date = st.date_input("End date (FireAnt RRG)", value=default_end, key="fa_end_date")

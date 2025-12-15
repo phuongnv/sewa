@@ -16,6 +16,7 @@ RRG_FILTER_OPTIONS = {
     "none": "Không áp dụng",
     "rs_gt_100": "RS-Ratio > 100 (giá trị mới nhất)",
     "avg_up": "Trung bình 3 ngày gần nhất tăng so với 3 ngày trước",
+    "rs_fa_increasing_below_100": "RS-FA tăng nhưng < 100 (rs_fa[-2] < rs_fa[-1] < 100)",
 }
 
 
@@ -227,6 +228,35 @@ def filter_symbols_by_rrg_condition(conn, symbols: list[str], end_date, conditio
                 if len(recent) == 3 and len(previous) == 3:
                     if recent.mean() > previous.mean():
                         valid_symbols.append(symbol)
+            return valid_symbols
+
+        if condition == "rs_fa_increasing_below_100":
+            query = """
+                WITH ranked AS (
+                    SELECT symbol, rs_fa, date,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+                    FROM rrg_data
+                    WHERE symbol = ANY(%s) AND date <= %s AND rs_fa IS NOT NULL
+                )
+                SELECT symbol, rs_fa, rn
+                FROM ranked
+                WHERE rn <= 2
+                ORDER BY symbol, rn;
+            """
+            df = pd.read_sql(query, conn, params=(symbol_array, end_date))
+            if df.empty:
+                return []
+
+            valid_symbols = []
+            for symbol, group in df.groupby("symbol"):
+                if len(group) >= 2:
+                    # rn=1 là ngày mới nhất, rn=2 là ngày hôm trước
+                    latest = group[group["rn"] == 1]["rs_fa"].iloc[0]
+                    previous = group[group["rn"] == 2]["rs_fa"].iloc[0]
+                    # Kiểm tra: previous < latest < 100
+                    if pd.notna(latest) and pd.notna(previous):
+                        if previous < latest < 100:
+                            valid_symbols.append(symbol)
             return valid_symbols
 
         return symbols
