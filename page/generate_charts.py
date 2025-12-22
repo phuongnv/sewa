@@ -371,6 +371,18 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
             if len(rs_fa_valid) > 0:
                 ax.scatter(rs_fa_valid.iloc[-1], rm_fa_valid.iloc[-1], color='black', s=100, marker='x', zorder=4, label='FA End')
 
+
+    # =====================
+    # PRICE: 60 CLOSES UNTIL str_end
+    # =====================
+    price_60 = get_last_n_close_until_end(
+        symbol_data,
+        end_date=str_end,
+        n=60
+    )
+
+    price_scaled = normalize_price_to_100(price_60)
+
     # Thêm nhãn góc phần tư
     ax.text(ax.get_xlim()[1] * 0.95, ax.get_ylim()[1] * 0.95, 'Leading', fontsize=12, color='green', ha='right', va='top')
     ax.text(ax.get_xlim()[1] * 0.95, ax.get_ylim()[0] * 1.05, 'Weakening', fontsize=12, color='red', ha='right', va='bottom')
@@ -391,6 +403,35 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
 
     st.pyplot(fig)
 
+def get_last_n_close_until_end(
+    df: pd.DataFrame,
+    end_date: str,
+    n: int = 60
+) -> pd.Series:
+    """
+    Lấy n giá close gần nhất tính đến end_date (inclusive)
+    Không phụ thuộc str_start
+    """
+    df = df.sort_index()
+
+    # Chỉ lấy dữ liệu <= end_date
+    df_end = df.loc[:end_date]
+
+    if df_end.empty or 'close' not in df_end.columns:
+        return pd.Series(dtype=float)
+
+    return df_end['close'].tail(n)
+
+def normalize_price_to_100(price: pd.Series) -> pd.Series:
+    price = price.dropna()
+    if price.empty:
+        return price
+
+    base_price = price.iloc[0]
+    if base_price == 0:
+        return pd.Series(index=price.index, data=np.nan)
+
+    return price / base_price * 100
 
 
 
