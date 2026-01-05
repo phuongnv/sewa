@@ -426,14 +426,14 @@ def launch_daily_scheduler(update_latest_and_calculate_rrg):
 
     while current_time <= end_time:
         if exclusive_start_time <= current_time < exclusive_end_time:
-            current_time += timedelta(minutes=60)
+            current_time += timedelta(minutes=120)
             continue
         vn_time = VN_TZ.localize(current_time)
         utc_time = vn_time.astimezone(pytz.utc)
         time_str = utc_time.strftime("%H:%M")
         schedule.every().day.at(time_str).do(update_latest_and_calculate_rrg)
         scheduled_times.append(f"{current_time.strftime('%H:%M')} (VN time)")
-        current_time += timedelta(minutes=60)
+        current_time += timedelta(minutes=120)
 
     print("Scheduled update_latest at:", ", ".join(scheduled_times))
 
