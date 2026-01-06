@@ -323,7 +323,7 @@ def fetch_margin_from_ssi_api(symbol: str, price: float, bearer_token: str, acco
         "accept": "application/json, text/plain, */*",
         "accept-language": "vi",
         "authorization": f"Bearer {bearer_token}",
-        "device-id": "93EB98BF-6691-47FB-A86E-1B3133215792",
+        "device-id": "4F6A70C5-B4D3-479A-836C-D063E187DFD6",
         "origin": "https://iboard.ssi.com.vn",
         "priority": "u=1, i",
         "referer": "https://iboard.ssi.com.vn/",
