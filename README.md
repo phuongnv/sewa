@@ -75,3 +75,7 @@ docker compose up
 
 ### rebuild after the code change
 docker compose up --build -d
+
+
+### Build devcontainer
+devcontainer up --workspace-folder . --remove-existing-container

@@ -214,7 +214,7 @@ def get_stock_symbols_for_today(conn):
 
 
 
-def get_stock_symbolsge_with_margin_for_today(conn, margin_threshold: float = 10):
+def get_stock_symbolsge_with_margin_for_today(conn, margin_threshold: float = 10, today = date.today()):
     """Get list of (symbol, close_price) from stock_prices where date is today."""
     if not conn:
         return []
@@ -224,7 +224,7 @@ def get_stock_symbolsge_with_margin_for_today(conn, margin_threshold: float = 10
         return []
 
     try:
-        today = date.today()
+        
         query = """
             SELECT stock_prices.symbol, close
             FROM stock_prices, stock_info
@@ -607,7 +607,7 @@ def render(conn):
             return
 
         with st.spinner("Đang lấy danh sách mã có margin > 0..."):
-            stock_data = get_stock_symbolsge_with_margin_for_today(conn, margin_threshold=0.0001)
+            stock_data = get_stock_symbolsge_with_margin_for_today(conn, margin_threshold=0.0001, today=fa_end_date)
 
         if not stock_data:
             st.warning("Không có mã nào có margin > 0 trong ngày hôm nay.")
