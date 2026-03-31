@@ -273,20 +273,27 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
         return
 
     symbol_data = rrg_df[rrg_df['symbol'] == symbol].sort_values('date')
-    rs = symbol_data['rs_ratio_scaled']
-    rm = symbol_data['rs_momentum_scaled']
 
-    if rs.empty:
-        st.warning(f"Không tìm thấy dữ liệu RRG đã tính toán cho mã {symbol}.")
+    # Chỉ sử dụng dữ liệu FA (rs_fa/rm_fa) cho biểu đồ
+    if 'rs_fa' not in symbol_data.columns or 'rm_fa' not in symbol_data.columns:
+        st.warning(f"Không tìm thấy dữ liệu FA cho mã {symbol}.")
         return
-    
-    # Lấy dữ liệu rs_fa và rm_fa nếu có
-    has_fa_data = 'rs_fa' in symbol_data.columns and 'rm_fa' in symbol_data.columns
-    if has_fa_data:
-        rs_fa = symbol_data['rs_fa']
-        rm_fa = symbol_data['rm_fa']
-        # Chỉ sử dụng dữ liệu FA nếu không phải tất cả đều NaN
-        has_fa_data = not (rs_fa.isna().all() or rm_fa.isna().all())
+
+    rs_fa = symbol_data['rs_fa']
+    rm_fa = symbol_data['rm_fa']
+    if rs_fa.dropna().empty or rm_fa.dropna().empty:
+        st.warning(f"Dữ liệu FA không đầy đủ cho mã {symbol}.")
+        return
+    has_fa_data = True
+
+    # Sử dụng rs_fa và rm_fa thay vì rs và rm truyền thống
+    rs = rs_fa
+    rm = rm_fa
+
+    # Nếu không có full FA data thì không vẽ biểu đồ
+    if rs.empty or rm.empty:
+        st.warning(f"Không có dữ liệu RRG FA hợp lệ cho mã {symbol}.")
+        return
 
     fig, ax = plt.subplots(figsize=(10, 10))
 
@@ -298,10 +305,10 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
     ax.axvline(100, color='gray', linestyle='--', linewidth=0.8)
 
     # Đặt giới hạn trục X và Y (bao gồm cả dữ liệu FA nếu có)
-    rm_min_val = min(rm.min(), 98)
-    rm_max_val = max(rm.max(), 102)
-    rs_min_val = min(rs.min(), 98)
-    rs_max_val = max(rs.max(), 102)
+    rm_min_val = min(100, 98)
+    rm_max_val = max(100, 102)
+    rs_min_val = min(100, 98)
+    rs_max_val = max(100, 102)
     
     if has_fa_data:
         # Mở rộng giới hạn để bao gồm dữ liệu FA
@@ -326,22 +333,12 @@ def plot_rrg_time_series(rrg_df: pd.DataFrame, symbol: str, benchmark: str, peri
     quadrants[(rs < 100) & (rm < 100)] = 'Lagging'
     quadrants[(rs < 100) & (rm >= 100)] = 'Improving'
 
-    # Vẽ đường RRG Time Series
-    for i in range(1, len(rs)):
-        current_quadrant = quadrants.iloc[i]
-        color = quadrant_colors.get(current_quadrant, 'black')
-        ax.plot(
-            [rs.iloc[i-1], rs.iloc[i]],
-            [rm.iloc[i-1], rm.iloc[i]],
-            color=color,
-            linewidth=2,
-            alpha=0.7,
-            zorder=3
-        )
+    # Không vẽ đường RRG Time Series từ rs/rm, chỉ hiển thị điểm cuối cùng và điểm đầu tiên nếu cần
+    # (đã yêu cầu: remove chart line from rs and rm, keep rs_fa and rm_fa chart)
 
     # Điểm cuối cùng (Hiện tại)
-    ax.scatter(rs.iloc[-1], rm.iloc[-1], color='black', s=150, zorder=5) 
-    ax.text(rs.iloc[-1], rm.iloc[-1], symbol, fontsize=12, ha='right', va='bottom', zorder=6) 
+    ax.scatter(rs.iloc[-1], rm.iloc[-1], color='black', s=150, zorder=5)
+    ax.text(rs.iloc[-1], rm.iloc[-1], symbol, fontsize=12, ha='right', va='bottom', zorder=6)
 
     # Điểm đầu tiên
     ax.scatter(rs.iloc[0], rm.iloc[0], color='gray', s=50, marker='o', zorder=5)
