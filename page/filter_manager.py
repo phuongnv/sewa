@@ -245,6 +245,35 @@ def get_stock_symbolsge_with_margin_for_today(conn, margin_threshold: float = 10
         st.error(f"Lỗi khi lấy danh sách mã từ stock_prices: {exc}")
         return []
 
+def get_stock_symbols_with_margin(conn, margin_threshold: float = 10):
+    """Get list of (symbol) from stock_info where margin >= threshold."""
+    if not conn:
+        return []
+
+    conn = db_connector.ensure_connection(conn)
+    if not conn:
+        return []
+
+    try:
+        
+        query = """
+            SELECT stock_info.symbol
+            FROM stock_info
+            WHERE stock_info.margin >= %s
+            ORDER BY symbol ASC;
+        """
+        df = pd.read_sql(query, conn, params=(margin_threshold,))
+        if df.empty:
+            return []
+        # Filter out rows with NaN or null close prices
+        # df = df.dropna(subset=["close"])
+        if df.empty:
+            return []
+        return df["symbol"].tolist()
+    except Exception as exc:
+        st.error(f"Lỗi khi lấy danh sách mã từ stock_prices: {exc}")
+        return []
+
 
 def fetch_rrg_from_fireant_api(symbol: str, bearer_token: str, start_date: date, end_date: date):
     """Fetch RRG data from FireAnt API for a symbol."""
@@ -276,7 +305,7 @@ def fetch_rrg_from_fireant_api(symbol: str, bearer_token: str, start_date: date,
 
 
 def upsert_rrg_fireant(conn, records: list):
-    """Update existing rrg_data rows with FireAnt values (rs_fa, rm_fa) only."""
+    """Insert or update rrg_data rows with FireAnt values (rs_fa, rm_fa)."""
     if not records:
         return False
 
@@ -284,19 +313,20 @@ def upsert_rrg_fireant(conn, records: list):
     if not conn:
         return False
 
-    rows = [(sym, d, rs, rm) for sym, d, rs, rm in records]
+    now = datetime.now()
+    rows = [(sym, d, rs, rm, now) for sym, d, rs, rm in records]
 
-    update_sql = """
-        UPDATE rrg_data AS t
-        SET rs_fa = v.rs_fa,
-            rm_fa = v.rm_fa,
-            updated_at = NOW()
-        FROM (VALUES %s) AS v(symbol, date, rs_fa, rm_fa)
-        WHERE t.symbol = v.symbol AND t.date = v.date;
+    upsert_sql = """
+        INSERT INTO rrg_data (symbol, date, rs_fa, rm_fa, updated_at)
+        VALUES %s
+        ON CONFLICT (symbol, date) DO UPDATE
+        SET rs_fa = EXCLUDED.rs_fa,
+            rm_fa = EXCLUDED.rm_fa,
+            updated_at = NOW();
     """
     try:
         with conn.cursor() as cur:
-            execute_values(cur, update_sql, rows, template="(%s,%s,%s,%s)")
+            execute_values(cur, upsert_sql, rows, template="(%s,%s,%s,%s,%s)")
         conn.commit()
         return True
     except Exception as exc:
@@ -607,13 +637,13 @@ def render(conn):
             return
 
         with st.spinner("Đang lấy danh sách mã có margin > 0..."):
-            stock_data = get_stock_symbolsge_with_margin_for_today(conn, margin_threshold=0.0001, today=fa_end_date)
+            stock_data = get_stock_symbols_with_margin(conn, margin_threshold=1)
 
         if not stock_data:
-            st.warning("Không có mã nào có margin > 0 trong ngày hôm nay.")
+            st.warning("Không có mã nào có margin > 0.")
             return
 
-        symbols = [s for s, _ in stock_data]
+        symbols = [s for s in stock_data]
         st.info(f"Tìm thấy {len(symbols)} mã. Đang gọi FireAnt API...")
 
         all_records = []
