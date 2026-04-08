@@ -527,37 +527,49 @@ def render(conn):
         symbol_data = {}
         with st.spinner("Đang tải dữ liệu RRG..."):
             if use_custom_symbols:
-                # Always recalculate using fresh 365-day price data
-                calc_start_date = end_date - timedelta(days=CUSTOM_SYMBOL_HISTORY_DAYS)
-                str_calc_start = calc_start_date.strftime("%Y-%m-%d")
-                for symbol in margin_symbols:
-                    price_df = db_connector.fetch_price_data(conn, [symbol, BENCHMARK_SYMBOL], str_calc_start, str_end)
-                    if price_df.empty:
-                        symbol_data[symbol] = None
-                        continue
+                # Fetch from DB, fallback to calculation if missing
+                rrg_df_db = fetch_rrg_data_from_db(conn, margin_symbols, str_start, str_end)
+                
+                if not rrg_df_db.empty:
+                    for symbol in margin_symbols:
+                        symbol_rrg = rrg_df_db[rrg_df_db['symbol'] == symbol]
+                        if not symbol_rrg.empty:
+                            symbol_data[symbol] = symbol_rrg
+                        else:
+                            symbol_data[symbol] = None
+                else:
+                    st.info("Không tìm thấy dữ liệu RRG trong database. Đang tính toán trực tiếp...")
+                    # Recalculate using fresh 365-day price data
+                    calc_start_date = end_date - timedelta(days=CUSTOM_SYMBOL_HISTORY_DAYS)
+                    str_calc_start = calc_start_date.strftime("%Y-%m-%d")
+                    for symbol in margin_symbols:
+                        price_df = db_connector.fetch_price_data(conn, [symbol, BENCHMARK_SYMBOL], str_calc_start, str_end)
+                        if price_df.empty:
+                            symbol_data[symbol] = None
+                            continue
 
-                    rrg_df = calculate_rrg_data(price_df, BENCHMARK_SYMBOL, RRG_PERIOD, SCALE_FACTOR)
-                    if rrg_df.empty:
-                        symbol_data[symbol] = None
-                        continue
+                        rrg_df = calculate_rrg_data(price_df, BENCHMARK_SYMBOL, RRG_PERIOD, SCALE_FACTOR)
+                        if rrg_df.empty:
+                            symbol_data[symbol] = None
+                            continue
 
-                    rrg_df["date"] = pd.to_datetime(rrg_df["date"])
-                    rrg_filtered = rrg_df[
-                        (rrg_df["date"] >= pd.to_datetime(str_start)) & (rrg_df["date"] <= pd.to_datetime(str_end))
-                    ]
-                    if rrg_filtered.empty:
-                        symbol_data[symbol] = None
-                    else:
-                        # Bổ sung dữ liệu rs_fa và rm_fa từ database
-                        fa_df = fetch_fa_data_from_db(conn, symbol, str_start, str_end)
-                        if not fa_df.empty:
-                            # Merge dữ liệu FA vào rrg_filtered theo symbol và date
-                            rrg_filtered = rrg_filtered.merge(
-                                fa_df[['date', 'rs_fa', 'rm_fa']],
-                                on=['date'],
-                                how='left'
-                            )
-                        symbol_data[symbol] = rrg_filtered
+                        rrg_df["date"] = pd.to_datetime(rrg_df["date"])
+                        rrg_filtered = rrg_df[
+                            (rrg_df["date"] >= pd.to_datetime(str_start)) & (rrg_df["date"] <= pd.to_datetime(str_end))
+                        ]
+                        if rrg_filtered.empty:
+                            symbol_data[symbol] = None
+                        else:
+                            # Bổ sung dữ liệu rs_fa và rm_fa từ database
+                            fa_df = fetch_fa_data_from_db(conn, symbol, str_start, str_end)
+                            if not fa_df.empty:
+                                # Merge dữ liệu FA vào rrg_filtered theo symbol và date
+                                rrg_filtered = rrg_filtered.merge(
+                                    fa_df[['date', 'rs_fa', 'rm_fa']],
+                                    on=['date'],
+                                    how='left'
+                                )
+                            symbol_data[symbol] = rrg_filtered
             else:
                 # Fetch from DB, fallback to calculation if missing
                 rrg_df_db = fetch_rrg_data_from_db(conn, margin_symbols, str_start, str_end)
