@@ -15,7 +15,7 @@ CUSTOM_SYMBOL_HISTORY_DAYS = 365
 RRG_FILTER_OPTIONS = {
     "none": "Không áp dụng",
     "rs_gt_100": "RS-Ratio > 100 (giá trị mới nhất)",
-    "avg_up": "Trung bình 3 ngày gần nhất tăng so với 3 ngày trước",
+    "rm_fa_up": "rm_fa is up (rm_fa[-3] < rm_fa[-2] < rm_fa[-1])",
     "rs_fa_increasing_below_100": "RS-FA tăng nhưng < 100 (rs_fa[-2] < rs_fa[-1] < 100)",
 }
 
@@ -204,17 +204,17 @@ def filter_symbols_by_rrg_condition(conn, symbols: list[str], end_date, conditio
                 return []
             return df["symbol"].tolist()
 
-        if condition == "avg_up":
+        if condition == "rm_fa_up":
             query = """
                 WITH ranked AS (
-                    SELECT symbol, rs_ratio_scaled, date,
+                    SELECT symbol, rm_fa, date,
                            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
                     FROM rrg_data
-                    WHERE symbol = ANY(%s) AND date <= %s
+                    WHERE symbol = ANY(%s) AND date <= %s AND rm_fa IS NOT NULL
                 )
-                SELECT symbol, rs_ratio_scaled, rn
+                SELECT symbol, rm_fa, rn
                 FROM ranked
-                WHERE rn <= 6
+                WHERE rn <= 3
                 ORDER BY symbol, rn;
             """
             df = pd.read_sql(query, conn, params=(symbol_array, end_date))
@@ -223,11 +223,13 @@ def filter_symbols_by_rrg_condition(conn, symbols: list[str], end_date, conditio
 
             valid_symbols = []
             for symbol, group in df.groupby("symbol"):
-                recent = group[group["rn"] <= 3]["rs_ratio_scaled"]
-                previous = group[(group["rn"] > 3) & (group["rn"] <= 6)]["rs_ratio_scaled"]
-                if len(recent) == 3 and len(previous) == 3:
-                    if recent.mean() > previous.mean():
-                        valid_symbols.append(symbol)
+                if len(group) >= 3:
+                    oldest = group[group["rn"] == 3]["rm_fa"].iloc[0]
+                    middle = group[group["rn"] == 2]["rm_fa"].iloc[0]
+                    latest = group[group["rn"] == 1]["rm_fa"].iloc[0]
+                    if pd.notna(oldest) and pd.notna(middle) and pd.notna(latest):
+                        if oldest < middle < latest:
+                            valid_symbols.append(symbol)
             return valid_symbols
 
         if condition == "rs_fa_increasing_below_100":
