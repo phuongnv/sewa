@@ -14,7 +14,7 @@ CUSTOM_SYMBOL_HISTORY_DAYS = 365
 
 RRG_FILTER_OPTIONS = {
     "none": "Không áp dụng",
-    "rs_gt_100": "RS-Ratio > 100 (giá trị mới nhất)",
+    "rs_gt_100": "rs_fa[-1] > rs_fa[-2] and rm_fa[-1] > rm_fa[-2]",
     "rm_fa_up": "rm_fa is up (rm_fa[-3] < rm_fa[-2] < rm_fa[-1])",
     "rs_fa_increasing_below_100": "RS-FA tăng nhưng < 100 (rs_fa[-2] < rs_fa[-1] < 100)",
 }
@@ -189,20 +189,32 @@ def filter_symbols_by_rrg_condition(conn, symbols: list[str], end_date, conditio
 
         if condition == "rs_gt_100":
             query = """
-                WITH latest AS (
-                    SELECT symbol, rs_ratio_scaled, date,
+                WITH ranked AS (
+                    SELECT symbol, rs_fa, rm_fa, date,
                            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
                     FROM rrg_data
-                    WHERE symbol = ANY(%s) AND date <= %s
+                    WHERE symbol = ANY(%s) AND date <= %s AND rs_fa IS NOT NULL AND rm_fa IS NOT NULL
                 )
-                SELECT symbol
-                FROM latest
-                WHERE rn = 1 AND rs_ratio_scaled > 100;
+                SELECT symbol, rs_fa, rm_fa, rn
+                FROM ranked
+                WHERE rn <= 2
+                ORDER BY symbol, rn;
             """
             df = pd.read_sql(query, conn, params=(symbol_array, end_date))
             if df.empty:
                 return []
-            return df["symbol"].tolist()
+
+            valid_symbols = []
+            for symbol, group in df.groupby("symbol"):
+                if len(group) >= 2:
+                    latest_rs = group[group["rn"] == 1]["rs_fa"].iloc[0]
+                    previous_rs = group[group["rn"] == 2]["rs_fa"].iloc[0]
+                    latest_rm = group[group["rn"] == 1]["rm_fa"].iloc[0]
+                    previous_rm = group[group["rn"] == 2]["rm_fa"].iloc[0]
+                    if (pd.notna(latest_rs) and pd.notna(previous_rs) and pd.notna(latest_rm) and pd.notna(previous_rm)):
+                        if latest_rs > previous_rs and latest_rm > previous_rm:
+                            valid_symbols.append(symbol)
+            return valid_symbols
 
         if condition == "rm_fa_up":
             query = """
