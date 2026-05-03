@@ -79,3 +79,7 @@ docker compose up --build -d
 
 ### Build devcontainer
 devcontainer up --workspace-folder . --remove-existing-container
+
+
+### refresh DB with 500 days (need test)
+python update_ssi_prices.py --mode history

@@ -175,6 +175,14 @@ def save_stock_history(conn, records, exchange):
     if not records:
         return
 
+    # Deduplicate records based on (symbol, date) to avoid ON CONFLICT issues
+    unique_records = {}
+    for r in records:
+        key = (r[0], r[1])  # symbol, date
+        unique_records[key] = r
+
+    records = list(unique_records.values())
+
     with conn.cursor() as cur:
         execute_values(cur, """
             INSERT INTO stock_prices (symbol, date, open, high, low, close, volume, exchange)
@@ -314,7 +322,7 @@ def update_history():
     # for exch in ["hose", "hnx"]:
     #     stock_records = fetch_stock_data(exch)
     #     save_stock_data(conn, stock_records)
-    update_all(conn, days=200)
+    update_all(conn, days=700)
     conn.close()
 
 
