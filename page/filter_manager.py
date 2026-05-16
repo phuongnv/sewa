@@ -680,10 +680,12 @@ def render(conn):
             st.error("Không thể lưu dữ liệu RRG. Vui lòng kiểm tra log.")
 
     if st.button("Get latest stock prices", type="secondary"):
-        thread = threading.Thread(target=update_ssi_prices.update_latest)
-        thread.daemon = True
-        thread.start()
-        st.info("Bắt đầu cập nhật giá cổ phiếu mới nhất. Kiểm tra đầu ra logs để biết tiến trình.")
+        with st.spinner("🔄 Đang cập nhật giá cổ phiếu mới nhất..."):
+            try:
+                update_ssi_prices.update_latest()
+                st.success("✅ Cập nhật giá cổ phiếu thành công!")
+            except Exception as e:
+                st.error(f"❌ Lỗi khi cập nhật giá: {str(e)}")
 
     st.subheader("Section 3 — RRG Data Calculation & Storage")
     st.markdown(
